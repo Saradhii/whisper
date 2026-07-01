@@ -1,0 +1,37 @@
+{
+  "expo": {
+    "name": "Whisper",
+    "slug": "whisper",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "whisper",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.whisper.app",
+      "infoPlist": {
+        "UIBackgroundModes": []
+      },
+      "entitlements": {
+        "com.apple.developer.kernel.increased-memory-limit": true
+      }
+    },
+    "android": {
+      "package": "com.whisper.app",
+      "edgeToEdgeEnabled": true
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Whisper needs access to your photos so the model can look at them."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
