@@ -25,6 +25,8 @@ export type ModelSpec = {
   tools?: boolean;
   /** Abliterated/unfiltered model → app runs a canary self-test after download. */
   uncensored?: boolean;
+  /** Highlighted as a recommended pick within its size group. */
+  suggested?: boolean;
   nCtx: number;
   /** Extra stop strings for this model family (native EOS still applies). */
   stop?: string[];
@@ -54,6 +56,7 @@ export const CATALOG: ModelSpec[] = [
     sizeBytes: 3.4 * GB,
     minRamBytes: 6 * GB,
     vision: true,
+    suggested: true,
     nCtx: 2048,
     stop: ['<end_of_turn>', '<eos>'],
   },
@@ -74,6 +77,7 @@ export const CATALOG: ModelSpec[] = [
     minRamBytes: 6 * GB,
     vision: false,
     tools: true,
+    suggested: true,
     nCtx: 4096,
     stop: ['<|im_end|>'],
   },
@@ -93,6 +97,7 @@ export const CATALOG: ModelSpec[] = [
     minRamBytes: 6 * GB,
     vision: false,
     tools: true,
+    suggested: true,
     nCtx: 4096,
     stop: ['<|eot_id|>'],
   },
@@ -205,3 +210,26 @@ export function formatBytes(bytes: number): string {
   if (bytes >= GB) return `${(bytes / GB).toFixed(1)} GB`;
   return `${Math.round(bytes / 1024 ** 2)} MB`;
 }
+
+export type SizeTier = 'mini' | 'medium' | 'large';
+
+/** Bucket a model by download size. Unknown (custom, 0) falls into Mini. */
+export function sizeTier(bytes: number): SizeTier {
+  if (bytes >= 6 * GB) return 'large';
+  if (bytes >= 2 * GB) return 'medium';
+  return 'mini';
+}
+
+export const TIER_ORDER: SizeTier[] = ['mini', 'medium', 'large'];
+
+export const TIER_LABEL: Record<SizeTier, string> = {
+  mini: 'Mini',
+  medium: 'Medium',
+  large: 'Large',
+};
+
+export const TIER_HINT: Record<SizeTier, string> = {
+  mini: 'under 2 GB',
+  medium: '2–6 GB',
+  large: '6 GB and up',
+};

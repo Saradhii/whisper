@@ -82,30 +82,30 @@ export default function AnimatedSplash({ onDone }: { onDone: () => void }) {
       <Canvas style={StyleSheet.absoluteFill}>
         <Fill color="#ffffff" />
         <Group origin={vec(cx, cy)} transform={bloomTransform} opacity={bloomOpacity}>
-          {/* Core violet bloom */}
+          {/* Core red bloom (brand) */}
           <Circle c={vec(cx, cy)} r={R}>
             <RadialGradient
               c={vec(cx, cy)}
               r={R}
-              colors={['#6d28d9', '#7c5cfc', 'rgba(124, 92, 252, 0)']}
+              colors={['#c81e1e', '#e5322b', 'rgba(229, 50, 43, 0)']}
               positions={[0, 0.42, 1]}
             />
           </Circle>
-          {/* Blue lobe, lower left */}
+          {/* Violet accent lobe, lower left */}
           <Circle c={vec(cx - R * 0.55, cy + R * 0.3)} r={R * 0.95}>
             <RadialGradient
               c={vec(cx - R * 0.55, cy + R * 0.3)}
               r={R * 0.95}
-              colors={['rgba(59, 130, 246, 0.85)', 'rgba(59, 130, 246, 0)']}
+              colors={['rgba(124, 92, 252, 0.75)', 'rgba(124, 92, 252, 0)']}
               positions={[0, 1]}
             />
           </Circle>
-          {/* Pink lobe, upper right */}
+          {/* Warm pink lobe, upper right */}
           <Circle c={vec(cx + R * 0.5, cy - R * 0.4)} r={R * 0.9}>
             <RadialGradient
               c={vec(cx + R * 0.5, cy - R * 0.4)}
               r={R * 0.9}
-              colors={['rgba(232, 121, 249, 0.7)', 'rgba(232, 121, 249, 0)']}
+              colors={['rgba(249, 121, 160, 0.7)', 'rgba(249, 121, 160, 0)']}
               positions={[0, 1]}
             />
           </Circle>
@@ -125,7 +125,7 @@ const styles = StyleSheet.create({
     fontFamily: 'DancingScript_700Bold',
     fontSize: 68,
     color: '#ffffff',
-    textShadowColor: 'rgba(109, 40, 217, 0.35)',
+    textShadowColor: 'rgba(200, 30, 30, 0.35)',
     textShadowRadius: 18,
     textShadowOffset: { width: 0, height: 2 },
   },

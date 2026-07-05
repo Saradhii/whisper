@@ -24,6 +24,8 @@ import TypingIndicator from '@/src/chat/TypingIndicator';
 import Waveform from '@/src/voice/Waveform';
 import { ensureVerified } from '@/src/models/verifyModel';
 import { colors } from '@/src/theme';
+import * as Tts from '@/src/voice/tts/TtsService';
+import * as TtsStore from '@/src/voice/tts/TtsStore';
 import { useVoiceInput } from '@/src/voice/useVoiceInput';
 import { splitThinking } from '@/src/chat/thinking';
 import { engineFor, unloadAll, type ChatMessage } from '@/src/engines';
@@ -35,12 +37,15 @@ type ToolStatus = 'running' | 'done' | 'denied' | 'error';
 type UiMessage = ChatMessage & {
   image?: string;
   tool?: { label: string; status: ToolStatus };
+  error?: boolean;
 };
 
 export default function Chat() {
   const insets = useSafeAreaInsets();
   const listRef = useRef<FlatList<UiMessage>>(null);
   useSyncExternalStore(ModelManager.subscribe, ModelManager.getVersion);
+  useSyncExternalStore(TtsStore.subscribe, TtsStore.getVersion);
+  const tts = TtsStore.get();
 
   // Which model the engine finished (or failed) loading. `ready`/`loadError`
   // are derived by comparing against the active id, so switching models makes
@@ -67,6 +72,7 @@ export default function Chat() {
 
   useEffect(() => {
     void ModelManager.init();
+    void TtsStore.init();
   }, []);
 
   // (Re)load the engine whenever the active model changes; free native memory
@@ -180,10 +186,17 @@ export default function Chat() {
       // If the model produced nothing visible (e.g. stopped early), say so.
       if (!producedRef.current) {
         setMessages((prev) => [...prev, { role: 'assistant', content: '(no response)' }]);
+      } else if (tts.enabled && tts.autoSpeak) {
+        // Read the completed reply aloud.
+        setMessages((prev) => {
+          const last = [...prev].reverse().find((m) => m.role === 'assistant' && !m.tool);
+          if (last?.content) void Tts.speak(last.content, tts.voiceSid);
+          return prev;
+        });
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setMessages((prev) => [...prev, { role: 'assistant', content: `⚠️ ${msg}` }]);
+      setMessages((prev) => [...prev, { role: 'assistant', content: msg, error: true }]);
     } finally {
       setBusy(false);
       setThinking(false);
@@ -210,6 +223,22 @@ export default function Chat() {
           </Text>
         </View>
         {active && ready && active.uncensored ? <UncensoredBadge id={active.id} /> : null}
+        {active && ready ? (
+          <Pressable
+            style={styles.headerIcon}
+            onPress={() => router.push('/live')}
+            hitSlop={8}
+            accessibilityLabel="Live voice mode">
+            <Ionicons name="radio-outline" size={22} color={colors.accent} />
+          </Pressable>
+        ) : null}
+        <Pressable
+          style={styles.headerIcon}
+          onPress={() => router.push('/voice-settings')}
+          hitSlop={8}
+          accessibilityLabel="Voice settings">
+          <Ionicons name="volume-high-outline" size={22} color={colors.accent} />
+        </Pressable>
         <Pressable style={styles.modelsBtn} onPress={() => router.push('/models')} hitSlop={8}>
           <Text style={styles.modelsBtnText}>Models</Text>
         </Pressable>
@@ -242,16 +271,11 @@ export default function Chat() {
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
           renderItem={({ item }) =>
             item.tool ? (
-              <View style={styles.toolChip}>
-                <Text style={styles.toolChipText}>
-                  {item.tool.status === 'running'
-                    ? `⏳ ${item.tool.label}`
-                    : item.tool.status === 'done'
-                      ? `✓ ${item.tool.label}`
-                      : item.tool.status === 'denied'
-                        ? `🚫 ${item.tool.label} (denied)`
-                        : `⚠️ ${item.tool.label} (failed)`}
-                </Text>
+              <ToolChip tool={item.tool} />
+            ) : item.error ? (
+              <View style={[styles.bubble, styles.assistant, styles.errorBubble]}>
+                <Ionicons name="alert-circle" size={16} color={colors.danger} />
+                <Text style={styles.errorBubbleText}>{item.content}</Text>
               </View>
             ) : item.role === 'user' ? (
               <View style={[styles.bubble, styles.user]}>
@@ -263,7 +287,11 @@ export default function Chat() {
                 ) : null}
               </View>
             ) : (
-              <AssistantBubble content={item.content} />
+              <AssistantBubble
+                content={item.content}
+                canSpeak={tts.enabled}
+                onSpeak={() => Tts.speak(item.content, tts.voiceSid)}
+              />
             )
           }
           ListFooterComponent={thinking ? <TypingIndicator /> : null}
@@ -353,12 +381,34 @@ export default function Chat() {
   );
 }
 
+// Tool-activity chip with a status icon (no emoji).
+function ToolChip({ tool }: { tool: { label: string; status: ToolStatus } }) {
+  const icon =
+    tool.status === 'running'
+      ? { name: 'ellipsis-horizontal' as const, color: colors.textSecondary }
+      : tool.status === 'done'
+        ? { name: 'checkmark-circle' as const, color: '#2e9e5b' }
+        : tool.status === 'denied'
+          ? { name: 'close-circle' as const, color: colors.textSecondary }
+          : { name: 'alert-circle' as const, color: colors.danger };
+  const suffix = tool.status === 'denied' ? ' (denied)' : tool.status === 'error' ? ' (failed)' : '';
+  return (
+    <View style={styles.toolChip}>
+      <Ionicons name={icon.name} size={14} color={icon.color} />
+      <Text style={styles.toolChipText}>
+        {tool.label}
+        {suffix}
+      </Text>
+    </View>
+  );
+}
+
 // Header badge reflecting the uncensored canary self-test for the active model.
 function UncensoredBadge({ id }: { id: string }) {
   const state = ModelManager.getVerifyState(id);
   const label =
     state === 'pass'
-      ? 'uncensored ✓'
+      ? 'uncensored'
       : state === 'fail'
         ? 'refused canary'
         : state === 'pending'
@@ -372,14 +422,23 @@ function UncensoredBadge({ id }: { id: string }) {
         : styles.badgeNeutral;
   return (
     <View style={[styles.badge, style]}>
+      {state === 'pass' ? <Ionicons name="shield-checkmark" size={11} color="#2e9e5b" /> : null}
       <Text style={styles.badgeText}>{label}</Text>
     </View>
   );
 }
 
 // Assistant message: hidden reasoning behind a collapsible "Thoughts" toggle
-// (visible live while streaming), final answer rendered as markdown.
-function AssistantBubble({ content }: { content: string }) {
+// (visible live while streaming), final answer as markdown, optional speaker.
+function AssistantBubble({
+  content,
+  canSpeak,
+  onSpeak,
+}: {
+  content: string;
+  canSpeak: boolean;
+  onSpeak: () => void;
+}) {
   const [showThoughts, setShowThoughts] = useState(false);
   const { thinking, answer } = splitThinking(content);
   const stillThinking = thinking !== null && !answer;
@@ -387,10 +446,15 @@ function AssistantBubble({ content }: { content: string }) {
   return (
     <View style={[styles.bubble, styles.assistant]}>
       {thinking ? (
-        <Pressable onPress={() => setShowThoughts((v) => !v)} hitSlop={6}>
-          <Text style={styles.thoughtsLabel}>
-            {stillThinking ? 'Thinking…' : showThoughts ? '▾ Thoughts' : '▸ Thoughts'}
-          </Text>
+        <Pressable style={styles.thoughtsToggle} onPress={() => setShowThoughts((v) => !v)} hitSlop={6}>
+          {!stillThinking ? (
+            <Ionicons
+              name={showThoughts ? 'chevron-down' : 'chevron-forward'}
+              size={13}
+              color={colors.textSecondary}
+            />
+          ) : null}
+          <Text style={styles.thoughtsLabel}>{stillThinking ? 'Thinking…' : 'Thoughts'}</Text>
         </Pressable>
       ) : null}
       {thinking && (showThoughts || stillThinking) ? (
@@ -400,6 +464,11 @@ function AssistantBubble({ content }: { content: string }) {
         <Markdown style={markdownStyles}>{answer}</Markdown>
       ) : !thinking ? (
         <Text style={styles.bubbleText}>…</Text>
+      ) : null}
+      {canSpeak && answer ? (
+        <Pressable style={styles.speakBtn} onPress={onSpeak} hitSlop={6}>
+          <Ionicons name="volume-medium-outline" size={16} color={colors.textSecondary} />
+        </Pressable>
       ) : null}
     </View>
   );
@@ -432,8 +501,12 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 8,
   },
-  modelsBtnText: { color: colors.primary, fontSize: 13, fontWeight: '600' },
+  modelsBtnText: { color: colors.accent, fontSize: 13, fontWeight: '600' },
+  headerIcon: { padding: 6, marginRight: 2 },
   badge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
     marginRight: 8,
     borderRadius: 8,
     paddingHorizontal: 8,
@@ -459,6 +532,9 @@ const styles = StyleSheet.create({
   userText: { color: colors.onPrimary, fontSize: 15, lineHeight: 21 },
   bubbleText: { color: colors.text, fontSize: 15, lineHeight: 21 },
   toolChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     alignSelf: 'flex-start',
     backgroundColor: colors.surface,
     borderRadius: 10,
@@ -468,6 +544,10 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   toolChipText: { color: colors.textSecondary, fontSize: 12 },
+  thoughtsToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
+  speakBtn: { alignSelf: 'flex-start', marginTop: 6, paddingVertical: 2 },
+  errorBubble: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
+  errorBubbleText: { color: colors.danger, fontSize: 14, lineHeight: 20, flex: 1 },
   thoughtsLabel: { color: colors.textSecondary, fontSize: 12, fontWeight: '600', marginBottom: 2 },
   thoughtsText: {
     color: colors.textFaint,
