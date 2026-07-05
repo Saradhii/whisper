@@ -5,7 +5,8 @@
     "version": "1.0.0",
     "orientation": "portrait",
     "scheme": "whisper",
-    "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
@@ -19,7 +20,13 @@
     },
     "android": {
       "package": "com.whisper.app",
-      "edgeToEdgeEnabled": true
+      "versionCode": 2,
+      "edgeToEdgeEnabled": true,
+      "permissions": ["android.permission.RECORD_AUDIO"],
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-foreground.png",
+        "backgroundImage": "./assets/adaptive-background.png"
+      }
     },
     "plugins": [
       "expo-router",
@@ -28,7 +35,43 @@
         {
           "photosPermission": "Whisper needs access to your photos so the model can look at them."
         }
-      ]
+      ],
+      [
+        "expo-calendar",
+        {
+          "calendarPermission": "Whisper needs calendar access so the assistant can create and read events for you."
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Whisper needs contacts access so the assistant can look up people when you ask."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Whisper uses your location only when you ask a location question."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Whisper needs media access so the assistant can search your photos and files when you ask.",
+          "savePhotosPermission": "Whisper needs media access to save files when you ask."
+        }
+      ],
+      "expo-notifications",
+      "expo-font",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#ffffff",
+          "image": "./assets/splash-blank.png",
+          "imageWidth": 64
+        }
+      ],
+      "expo-audio"
     ],
     "experiments": {
       "typedRoutes": true
