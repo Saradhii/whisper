@@ -29,6 +29,7 @@
       }
     },
     "plugins": [
+      "./plugins/withArm64Only",
       "expo-router",
       [
         "expo-image-picker",
