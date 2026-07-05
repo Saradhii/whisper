@@ -1,0 +1,30 @@
+diff --git a/node_modules/@fugood/react-native-audio-pcm-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java b/node_modules/@fugood/react-native-audio-pcm-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
+index 6d7d17d..89b44f8 100644
+--- a/node_modules/@fugood/react-native-audio-pcm-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
++++ b/node_modules/@fugood/react-native-audio-pcm-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
+@@ -75,7 +75,24 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+         }
+ 
+         int recordingBufferSize = bufferSize * 3;
+-        recorder = new AudioRecord(audioSource, sampleRateInHz, channelConfig, audioFormat, recordingBufferSize);
++        // On Android 12+ (API 31), build with a Context so the RECORD_AUDIO
++        // app-op is attributed to the app. The legacy no-context constructor
++        // leaves the app-op unstarted on Android 14+, which makes audioserver
++        // silence the record and AudioRecord.read() abort the process (SIGABRT).
++        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
++            recorder = new AudioRecord.Builder()
++                .setContext(reactContext)
++                .setAudioSource(audioSource)
++                .setAudioFormat(new AudioFormat.Builder()
++                    .setEncoding(audioFormat)
++                    .setSampleRate(sampleRateInHz)
++                    .setChannelMask(channelConfig)
++                    .build())
++                .setBufferSizeInBytes(recordingBufferSize)
++                .build();
++        } else {
++            recorder = new AudioRecord(audioSource, sampleRateInHz, channelConfig, audioFormat, recordingBufferSize);
++        }
+ 
+         if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
+             promise.reject("AudioRecord initialization failed");

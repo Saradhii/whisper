@@ -61,10 +61,13 @@ export default function Live() {
     }
     await TtsSettings.init();
     const voiceSid = TtsSettings.get().voiceSid;
-    // Warm up both models before the first turn (shows "Getting ready…").
+    // Release any audio player left over from the voice-settings preview: a
+    // live AudioPlayer holding the output session crashes AudioRecord when we
+    // start listening. Then warm up STT only — the TTS model loads lazily on
+    // the first spoken reply, so recording never runs during TTS setup.
+    Tts.stop();
     try {
       await SpeechService.loadWhisper();
-      await Tts.ensureModel();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
       setPhase('error');
@@ -72,35 +75,28 @@ export default function Live() {
     }
 
     while (aliveRef.current) {
-      // 1. Listen
-      setPhase('listening');
-      setCaption('');
-      const { promise, handle } = listenOnce((amp) => aliveRef.current && setLevel(amp));
-      vadRef.current = handle;
-      const pcm = await promise;
-      setLevel(0);
-      if (!aliveRef.current) return;
-      if (!pcm) continue; // no speech — keep listening
-
-      // 2. Transcribe
-      setPhase('thinking');
-      let text: string;
       try {
-        text = await SpeechService.transcribe(pcm);
-      } catch (e) {
-        return fail(e);
-      }
-      if (!aliveRef.current) return;
-      if (!text.trim()) {
+        // 1. Listen (release any playback first so the mic gets a clean session)
+        Tts.stop();
         setPhase('listening');
-        continue;
-      }
-      setCaption(text);
-      historyRef.current.push({ role: 'user', content: text });
+        setCaption('');
+        const { promise, handle } = listenOnce((amp) => aliveRef.current && setLevel(amp));
+        vadRef.current = handle;
+        const pcm = await promise;
+        setLevel(0);
+        if (!aliveRef.current) return;
+        if (!pcm) continue; // no speech — keep listening
 
-      // 3. Think (generate reply)
-      let reply = '';
-      try {
+        // 2. Transcribe
+        setPhase('thinking');
+        const text = await SpeechService.transcribe(pcm);
+        if (!aliveRef.current) return;
+        if (!text.trim()) continue;
+        setCaption(text);
+        historyRef.current.push({ role: 'user', content: text });
+
+        // 3. Think (generate reply)
+        let reply = '';
         const res = await engineFor(active).generate(
           [SYSTEM, ...historyRef.current],
           (tok) => {
@@ -109,22 +105,18 @@ export default function Live() {
           { disableThinking: true },
         );
         reply = res.text || reply;
-      } catch (e) {
-        return fail(e);
-      }
-      if (!aliveRef.current) return;
-      historyRef.current.push({ role: 'assistant', content: reply });
-      setCaption(reply);
+        if (!aliveRef.current) return;
+        historyRef.current.push({ role: 'assistant', content: reply });
+        setCaption(reply);
 
-      // 4. Speak, then wait for playback to finish before listening again.
-      setPhase('speaking');
-      try {
+        // 4. Speak, then wait for playback to finish before listening again.
+        setPhase('speaking');
         const duration = await Tts.speak(reply, voiceSid);
         await sleep(duration * 1000 + 250);
+        if (!aliveRef.current) return;
       } catch (e) {
-        return fail(e);
+        return fail(e); // any turn error → error screen, never a crash
       }
-      if (!aliveRef.current) return;
     }
   }
 

@@ -31,24 +31,29 @@ export default function LiveOrb({ phase, level }: { phase: OrbPhase; level: numb
     }
   }, [phase, auto]);
 
+  // 1 while listening (orb tracks mic amplitude), 0 otherwise (auto-animation).
+  const listening = useSharedValue(0);
+
   useEffect(() => {
     amp.value = withTiming(level, { duration: 110 });
   }, [level, amp]);
 
-  const drive = () => {
-    'worklet';
-    return phase === 'listening' ? amp.value : auto.value;
-  };
+  useEffect(() => {
+    listening.value = phase === 'listening' ? 1 : 0;
+  }, [phase, listening]);
 
-  const core = useAnimatedStyle(() => ({ transform: [{ scale: 1 + 0.12 * drive() }] }));
-  const mid = useAnimatedStyle(() => ({
-    transform: [{ scale: 1 + 0.28 * drive() }],
-    opacity: 0.5 + 0.3 * drive(),
-  }));
-  const outer = useAnimatedStyle(() => ({
-    transform: [{ scale: 1 + 0.5 * drive() }],
-    opacity: 0.25 + 0.25 * drive(),
-  }));
+  const core = useAnimatedStyle(() => {
+    const d = listening.value ? amp.value : auto.value;
+    return { transform: [{ scale: 1 + 0.12 * d }] };
+  });
+  const mid = useAnimatedStyle(() => {
+    const d = listening.value ? amp.value : auto.value;
+    return { transform: [{ scale: 1 + 0.28 * d }], opacity: 0.5 + 0.3 * d };
+  });
+  const outer = useAnimatedStyle(() => {
+    const d = listening.value ? amp.value : auto.value;
+    return { transform: [{ scale: 1 + 0.5 * d }], opacity: 0.25 + 0.25 * d };
+  });
 
   const tint =
     phase === 'error'
