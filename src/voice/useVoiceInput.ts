@@ -37,8 +37,8 @@ export function useVoiceInput(onText: (text: string) => void) {
           ),
         );
       }
+      await startRecording();
       activeRef.current = true;
-      startRecording();
       setState({ status: 'recording' });
     } catch (e) {
       activeRef.current = false;

@@ -22,35 +22,43 @@ export function listenOnce(
   let cancelled = false;
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  const promise = new Promise<Int16Array | null>((resolve) => {
-    startRecording();
-    let elapsed = 0;
-    let speechStarted = false;
-    let silence = 0;
+  // startRecording is async and can reject (mic busy / init failure); let that
+  // rejection propagate so the caller shows an error instead of a silent mic.
+  const promise = (async (): Promise<Int16Array | null> => {
+    await startRecording();
+    if (cancelled) {
+      stopRecording();
+      return null;
+    }
+    return new Promise<Int16Array | null>((resolve) => {
+      let elapsed = 0;
+      let speechStarted = false;
+      let silence = 0;
 
-    const finish = (emit: boolean) => {
-      if (timer) clearInterval(timer);
-      timer = null;
-      const pcm = stopRecording();
-      resolve(emit && !cancelled ? pcm : null);
-    };
+      const finish = (emit: boolean) => {
+        if (timer) clearInterval(timer);
+        timer = null;
+        const pcm = stopRecording();
+        resolve(emit && !cancelled ? pcm : null);
+      };
 
-    timer = setInterval(() => {
-      if (cancelled) return finish(false);
-      const amp = currentAmplitude();
-      onLevel(amp);
-      elapsed += POLL_MS;
+      timer = setInterval(() => {
+        if (cancelled) return finish(false);
+        const amp = currentAmplitude();
+        onLevel(amp);
+        elapsed += POLL_MS;
 
-      if (amp > SPEECH_ON) speechStarted = true;
+        if (amp > SPEECH_ON) speechStarted = true;
 
-      if (speechStarted) {
-        silence = amp < SPEECH_OFF ? silence + POLL_MS : 0;
-        if (silence >= SILENCE_END_MS || elapsed >= MAX_MS) return finish(true);
-      } else if (elapsed >= NO_SPEECH_MS) {
-        return finish(false); // never heard speech
-      }
-    }, POLL_MS);
-  });
+        if (speechStarted) {
+          silence = amp < SPEECH_OFF ? silence + POLL_MS : 0;
+          if (silence >= SILENCE_END_MS || elapsed >= MAX_MS) return finish(true);
+        } else if (elapsed >= NO_SPEECH_MS) {
+          return finish(false); // never heard speech
+        }
+      }, POLL_MS);
+    });
+  })();
 
   return { promise, handle: { cancel: () => {
     cancelled = true;

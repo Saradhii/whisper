@@ -32,12 +32,13 @@ function onData(base64: string): void {
   amplitude = samples.length ? Math.min(1, Math.sqrt(sumSq / samples.length) * 4) : 0;
 }
 
-/** Begin recording. No-op if already recording. */
-export function startRecording(): void {
+/** Begin recording. No-op if already recording. Rejects if the mic can't be
+ *  initialized — callers must surface that instead of listening to silence. */
+export async function startRecording(): Promise<void> {
   if (recording) return;
   chunks = [];
   amplitude = 0;
-  AudioRecord.init({
+  await AudioRecord.init({
     sampleRate: 16000,
     channels: 1,
     bitsPerSample: 16,

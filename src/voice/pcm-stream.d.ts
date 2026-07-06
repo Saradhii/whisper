@@ -18,7 +18,9 @@ declare module '@fugood/react-native-audio-pcm-stream' {
     remove: () => void;
   }
   export interface IAudioRecord {
-    init: (options: Options) => void;
+    /** Resolves once the native AudioRecord is created; rejects if the mic
+     *  can't be initialized (e.g. another app holds it). */
+    init: (options: Options) => Promise<void>;
     start: () => void;
     /** Fire-and-forget: returns nothing and writes no file. */
     stop: () => void;

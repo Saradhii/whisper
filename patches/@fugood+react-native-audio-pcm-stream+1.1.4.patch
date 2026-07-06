@@ -1,8 +1,33 @@
 diff --git a/node_modules/@fugood/react-native-audio-pcm-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java b/node_modules/@fugood/react-native-audio-pcm-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
-index 6d7d17d..89b44f8 100644
+index 6d7d17d..65f768a 100644
 --- a/node_modules/@fugood/react-native-audio-pcm-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
 +++ b/node_modules/@fugood/react-native-audio-pcm-stream/android/src/main/java/com/imxiqi/rnliveaudiostream/RNLiveAudioStreamModule.java
-@@ -75,7 +75,24 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+@@ -28,6 +28,8 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+     private AudioRecord recorder = null;
+     private int bufferSize;
+     private boolean isRecording;
++    private Thread recordingThread = null;
++    private java.util.concurrent.atomic.AtomicBoolean sessionActive = null;
+ 
+     public RNLiveAudioStreamModule(ReactApplicationContext reactContext) {
+         super(reactContext);
+@@ -41,6 +43,15 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+ 
+     @ReactMethod
+     public void init(ReadableMap options, Promise promise) {
++        // Clean up any previous session so re-init never leaks a recorder or
++        // races a still-running reader thread.
++        if (recordingThread != null) {
++            stop();
++        } else if (recorder != null) {
++            recorder.release();
++            recorder = null;
++        }
++
+         sampleRateInHz = 44100;
+         if (options.hasKey("sampleRate")) {
+             sampleRateInHz = options.getInt("sampleRate");
+@@ -75,7 +86,24 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
          }
  
          int recordingBufferSize = bufferSize * 3;
@@ -28,3 +53,80 @@ index 6d7d17d..89b44f8 100644
  
          if (recorder.getState() != AudioRecord.STATE_INITIALIZED) {
              promise.reject("AudioRecord initialization failed");
+@@ -89,18 +117,28 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+     public void start() {
+         if (recorder == null || isRecording) return;
+         isRecording = true;
+-        recorder.startRecording();
+-
+-        Thread recordingThread = new Thread(new Runnable() {
++        // The thread owns THIS recorder instance and THIS session flag. The
++        // shared fields must not be touched from the thread: by the time it
++        // wakes from a blocking read() after stop(), a new session may already
++        // have re-assigned them, and releasing/nulling the shared recorder
++        // here crashed the process (NPE / read-after-release SIGABRT).
++        final AudioRecord rec = recorder;
++        final int bufSize = bufferSize;
++        final java.util.concurrent.atomic.AtomicBoolean active =
++            new java.util.concurrent.atomic.AtomicBoolean(true);
++        sessionActive = active;
++        rec.startRecording();
++
++        recordingThread = new Thread(new Runnable() {
+             public void run() {
+                 try {
+                     int bytesRead;
+                     int count = 0;
+                     String base64Data;
+-                    byte[] buffer = new byte[bufferSize];
++                    byte[] buffer = new byte[bufSize];
+ 
+-                    while (isRecording) {
+-                        bytesRead = recorder.read(buffer, 0, buffer.length);
++                    while (active.get()) {
++                        bytesRead = rec.read(buffer, 0, buffer.length);
+ 
+                         // skip first 2 buffers to eliminate "click sound"
+                         if (bytesRead > 0 && ++count > 2) {
+@@ -108,12 +146,13 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+                             eventEmitter.emit("data", base64Data);
+                         }
+                     }
+-                    recorder.stop();
++                    rec.stop();
+                 } catch (Exception e) {
+                     e.printStackTrace();
+                 } finally {
+-                    recorder.release();
+-                    recorder = null;
++                    try {
++                        rec.release();
++                    } catch (Exception ignored) {}
+                 }
+             }
+         });
+@@ -124,5 +163,24 @@ public class RNLiveAudioStreamModule extends ReactContextBaseJavaModule {
+     @ReactMethod
+     public void stop() {
+         isRecording = false;
++        if (sessionActive != null) {
++            sessionActive.set(false);
++            sessionActive = null;
++        }
++        // Wait for the reader thread to release its recorder before returning:
++        // ReactMethods run sequentially on the NativeModules thread, so joining
++        // here guarantees a following init()/start() never overlaps the old
++        // session. read() blocks for at most one buffer (~100 ms), so the join
++        // is short; on timeout the thread still only touches its own recorder.
++        Thread t = recordingThread;
++        recordingThread = null;
++        recorder = null;
++        if (t != null) {
++            try {
++                t.join(1000);
++            } catch (InterruptedException e) {
++                Thread.currentThread().interrupt();
++            }
++        }
+     }
+ }
