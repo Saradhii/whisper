@@ -24,6 +24,12 @@ const SYSTEM: ChatMessage = {
     'natural sentences — conversational, not a list. No markdown, no emoji.',
 };
 
+// Keep only the most recent turns in the prompt. Live sessions run for many
+// turns; an unbounded history grows the prompt (and KV cache) every turn until
+// it overflows the 4096-token context. Spoken replies are short, so a few
+// turns of context is plenty.
+const MAX_HISTORY = 12; // messages (6 user/assistant turns)
+
 const CAPTIONS: Record<OrbPhase, string> = {
   connecting: 'Getting ready…',
   listening: 'Listening…',
@@ -107,6 +113,9 @@ export default function Live() {
         reply = res.text || reply;
         if (!aliveRef.current) return;
         historyRef.current.push({ role: 'assistant', content: reply });
+        if (historyRef.current.length > MAX_HISTORY) {
+          historyRef.current.splice(0, historyRef.current.length - MAX_HISTORY);
+        }
         setCaption(reply);
 
         // 4. Speak, then wait for playback to finish before listening again.

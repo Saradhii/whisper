@@ -21,6 +21,7 @@ let modelId: string | null = null;
 let engine: TtsEngine | null = null;
 let engineLoading: Promise<TtsEngine> | null = null;
 let player: AudioPlayer | null = null;
+let playerWavPath: string | null = null; // deleted when its playback is stopped
 let seq = 0; // cancels stale playback when a newer utterance starts
 
 export type TtsDownloadProgress = { progress: number }; // 0..1
@@ -118,6 +119,7 @@ export async function speak(text: string, sid: number): Promise<number> {
   if (mine !== seq) return 0;
   stopPlayer(); // stop the previous utterance's audio, keep our seq ownership
   player = createAudioPlayer(wavPath);
+  playerWavPath = wavPath;
   player.play();
   const rate = audio.sampleRate > 0 ? audio.sampleRate : 24000;
   return audio.samples.length / rate;
@@ -132,6 +134,12 @@ function stopPlayer(): void {
       // player already released
     }
     player = null;
+  }
+  // Every utterance writes its own WAV; without this they accumulate in the
+  // cache directory forever (one per spoken reply).
+  if (playerWavPath) {
+    void FileSystem.deleteAsync(playerWavPath, { idempotent: true }).catch(() => {});
+    playerWavPath = null;
   }
 }
 
