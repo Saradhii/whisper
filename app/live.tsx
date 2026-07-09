@@ -77,76 +77,83 @@ export default function Live() {
       return;
     }
 
-    while (aliveRef.current) {
-      try {
-        // 1. Listen (release any playback first so the mic gets a clean session)
-        Tts.stop();
-        setPhase('listening');
-        setCaption('');
-        const { promise, handle } = listenOnce((amp) => aliveRef.current && setLevel(amp));
-        vadRef.current = handle;
-        const pcm = await promise;
-        setLevel(0);
-        if (!aliveRef.current) return;
-        if (!pcm) continue; // no speech — keep listening
-
-        // 2. Transcribe
-        setPhase('thinking');
-        const text = await SpeechService.transcribe(pcm);
-        if (!aliveRef.current) return;
-        if (!text.trim()) continue;
-        setCaption(text);
-        historyRef.current.push({ role: 'user', content: text });
-
-        // 3. Think + speak, streamed sentence-by-sentence: the first sentence
-        //    plays while the model is still generating the rest, so the reply
-        //    starts sounding out far sooner than waiting for the whole thing.
-        const speech = Tts.speakStream(voiceSid);
-        let reply = '';
-        let started = false;
+    try {
+      while (aliveRef.current) {
         try {
-          const res = await engineFor(active).generate(
-            [SYSTEM, ...historyRef.current],
-            (tok) => {
-              reply += tok;
-              if (!aliveRef.current) return;
-              if (!started) {
-                started = true;
-                setPhase('speaking');
-              }
-              setCaption(reply);
-              speech.push(tok);
-            },
-            // Spoken replies are one or two sentences — cap tokens so a runaway
-            // generation can't stall the conversation.
-            { disableThinking: true, maxTokens: 220 },
-          );
-          // Grammar/non-streaming fallback: use the final text if nothing streamed.
-          if (!reply.trim() && res.text) {
-            reply = res.text;
-            setPhase('speaking');
-            setCaption(reply);
-            speech.push(res.text);
-          }
-        } catch (e) {
-          speech.cancel();
-          throw e;
-        }
-        if (!aliveRef.current) {
-          speech.cancel();
-          return;
-        }
-        historyRef.current.push({ role: 'assistant', content: reply });
-        if (historyRef.current.length > MAX_HISTORY) {
-          historyRef.current.splice(0, historyRef.current.length - MAX_HISTORY);
-        }
+          // 1. Listen (release any playback first so the mic gets a clean session)
+          Tts.stop();
+          setPhase('listening');
+          setCaption('');
+          const { promise, handle } = listenOnce((amp) => aliveRef.current && setLevel(amp));
+          vadRef.current = handle;
+          const pcm = await promise;
+          setLevel(0);
+          if (!aliveRef.current) return;
+          if (!pcm) continue; // no speech — keep listening
 
-        // 4. Wait for all queued speech to finish before listening again.
-        await speech.end();
-        if (!aliveRef.current) return;
-      } catch (e) {
-        return fail(e); // any turn error → error screen, never a crash
+          // 2. Transcribe
+          setPhase('thinking');
+          const text = await SpeechService.transcribe(pcm);
+          if (!aliveRef.current) return;
+          if (!text.trim()) continue;
+          setCaption(text);
+          historyRef.current.push({ role: 'user', content: text });
+
+          // 3. Think + speak, streamed sentence-by-sentence: the first sentence
+          //    plays while the model is still generating the rest, so the reply
+          //    starts sounding out far sooner than waiting for the whole thing.
+          const speech = Tts.speakStream(voiceSid);
+          let reply = '';
+          let started = false;
+          try {
+            const res = await engineFor(active).generate(
+              [SYSTEM, ...historyRef.current],
+              (tok) => {
+                reply += tok;
+                if (!aliveRef.current) return;
+                if (!started) {
+                  started = true;
+                  setPhase('speaking');
+                }
+                setCaption(reply);
+                speech.push(tok);
+              },
+              // Spoken replies are one or two sentences — cap tokens so a runaway
+              // generation can't stall the conversation.
+              { disableThinking: true, maxTokens: 220 },
+            );
+            // Grammar/non-streaming fallback: use the final text if nothing streamed.
+            if (!reply.trim() && res.text) {
+              reply = res.text;
+              setPhase('speaking');
+              setCaption(reply);
+              speech.push(res.text);
+            }
+          } catch (e) {
+            speech.cancel();
+            throw e;
+          }
+          if (!aliveRef.current) {
+            speech.cancel();
+            return;
+          }
+          historyRef.current.push({ role: 'assistant', content: reply });
+          if (historyRef.current.length > MAX_HISTORY) {
+            historyRef.current.splice(0, historyRef.current.length - MAX_HISTORY);
+          }
+
+          // 4. Wait for all queued speech to finish before listening again.
+          await speech.end();
+          if (!aliveRef.current) return;
+        } catch (e) {
+          return fail(e); // any turn error → error screen, never a crash
+        }
       }
+    } finally {
+      // Back to chat: free the voice models so a large chat model gets its RAM
+      // headroom back. Both reload lazily on the next voice use.
+      void SpeechService.unloadWhisper();
+      void Tts.unload();
     }
   }
 

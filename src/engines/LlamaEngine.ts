@@ -37,7 +37,15 @@ export const LlamaEngine: Engine = {
       model: files.model,
       n_ctx: spec.nCtx,
       n_gpu_layers: Platform.OS === 'ios' ? 99 : 0, // Metal on iOS; CPU on Android
-      ...(Platform.OS === 'android' ? { n_threads: ANDROID_THREADS } : {}),
+      ...(Platform.OS === 'android'
+        ? {
+            n_threads: ANDROID_THREADS,
+            // Quantize the K cache to 8-bit on memory-tight Android: ~half the
+            // key-cache RAM for negligible quality loss. (K quant needs no flash
+            // attention, unlike V — so it's safe regardless of what 'auto' picks.)
+            cache_type_k: 'q8_0' as const,
+          }
+        : {}),
       // Flash attention: fused attention kernel — less memory and faster on long
       // contexts. 'auto' lets llama.cpp turn it on where the build supports it.
       flash_attn_type: 'auto',
