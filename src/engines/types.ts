@@ -33,6 +33,9 @@ export type GenerateOptions = {
   disableThinking?: boolean;
   /** GBNF grammar to constrain output (forces valid tool-call/decision JSON). */
   grammar?: string;
+  /** Cap on generated tokens. Short for spoken/planning turns (faster, avoids
+   *  runaway); defaults to a roomy 1024 for full chat answers. */
+  maxTokens?: number;
 };
 
 export type GenerateResult = { text: string; toolCalls: ToolCall[] };

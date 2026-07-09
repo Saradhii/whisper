@@ -117,7 +117,9 @@ export default function Live() {
               setCaption(reply);
               speech.push(tok);
             },
-            { disableThinking: true },
+            // Spoken replies are one or two sentences — cap tokens so a runaway
+            // generation can't stall the conversation.
+            { disableThinking: true, maxTokens: 220 },
           );
           // Grammar/non-streaming fallback: use the final text if nothing streamed.
           if (!reply.trim() && res.text) {

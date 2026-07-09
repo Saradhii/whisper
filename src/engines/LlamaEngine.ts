@@ -22,6 +22,12 @@ import type {
 let context: LlamaContext | null = null;
 let loadedSpec: ModelSpec | null = null;
 
+// Android CPU decode: pin to the performance cores. Phones are big.LITTLE, so
+// using every core (llama.cpp's default) drags the fast cores down to the pace
+// of the little ones — 4 threads is the widely-tuned sweet spot for on-device
+// llama.cpp and matches what whisper uses here.
+const ANDROID_THREADS = 4;
+
 export const LlamaEngine: Engine = {
   async load(spec: ModelSpec, files: ModelFiles): Promise<void> {
     if (context && loadedSpec?.id === spec.id) return;
@@ -31,6 +37,10 @@ export const LlamaEngine: Engine = {
       model: files.model,
       n_ctx: spec.nCtx,
       n_gpu_layers: Platform.OS === 'ios' ? 99 : 0, // Metal on iOS; CPU on Android
+      ...(Platform.OS === 'android' ? { n_threads: ANDROID_THREADS } : {}),
+      // Flash attention: fused attention kernel — less memory and faster on long
+      // contexts. 'auto' lets llama.cpp turn it on where the build supports it.
+      flash_attn_type: 'auto',
     });
 
     // Enable vision. Without this, image parts in messages are ignored.
@@ -79,7 +89,7 @@ export const LlamaEngine: Engine = {
         // boundary cast. Everything inside `payload` is built from validated
         // values (see toolcalls.ts), never echoed native objects.
         messages: payload as RNLlamaOAICompatibleMessage[],
-        n_predict: 1024,
+        n_predict: opts?.maxTokens ?? 1024,
         temperature: 0.7,
         stop: loadedSpec?.stop ?? [],
         // GBNF grammar (grammar-constrained decoding): forces the sampler to

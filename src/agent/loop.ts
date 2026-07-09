@@ -73,8 +73,13 @@ export async function runAgent(
   ];
 
   // Planning: constrained decisions, no streaming (output is control JSON).
+  // A single decision object is tiny — cap it so a stray token stream can't run.
   for (let step = 0; step < MAX_STEPS; step++) {
-    const res = await engine.generate(messages, () => {}, { grammar, disableThinking: true });
+    const res = await engine.generate(messages, () => {}, {
+      grammar,
+      disableThinking: true,
+      maxTokens: 256,
+    });
     const decision = parseDecision(res.text);
     if (decision.kind === 'respond') break;
 
