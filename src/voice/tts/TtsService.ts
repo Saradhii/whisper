@@ -23,6 +23,8 @@ let engineLoading: Promise<TtsEngine> | null = null;
 let player: AudioPlayer | null = null;
 let playerWavPath: string | null = null; // deleted when its playback is stopped
 let seq = 0; // cancels stale playback when a newer utterance starts
+let clipSeq = 0; // unique suffix for streamed clips so their wavs never collide
+let activeStream: { cancel: () => void } | null = null; // live streaming session
 
 export type TtsDownloadProgress = { progress: number }; // 0..1
 
@@ -108,6 +110,8 @@ function speakable(text: string): string {
 export async function speak(text: string, sid: number): Promise<number> {
   const clean = speakable(text);
   if (!clean) return 0;
+  activeStream?.cancel(); // a one-shot supersedes any live stream
+  activeStream = null;
   const mine = ++seq;
   const eng = await getEngine();
   if (mine !== seq) return 0; // superseded while the engine loaded
@@ -123,6 +127,162 @@ export async function speak(text: string, sid: number): Promise<number> {
   player.play();
   const rate = audio.sampleRate > 0 ? audio.sampleRate : 24000;
   return audio.samples.length / rate;
+}
+
+// Play one wav to completion. Resolves on the real playback-finished event, or
+// a duration-based fallback if the event never fires. `onEnd` is exposed so a
+// cancel can cut playback short and settle the promise immediately.
+function playToEnd(
+  wavPath: string,
+  durationS: number,
+  register: (cancel: () => void) => void,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const p = createAudioPlayer(wavPath);
+    let sub: { remove: () => void } | null = null;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const cleanup = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      try {
+        sub?.remove();
+      } catch {
+        // listener already gone
+      }
+      try {
+        p.remove();
+      } catch {
+        // player already released
+      }
+      void FileSystem.deleteAsync(wavPath, { idempotent: true }).catch(() => {});
+      resolve();
+    };
+    register(cleanup); // let the queue abort this clip on cancel
+    sub = p.addListener('playbackStatusUpdate', (s: { didJustFinish?: boolean }) => {
+      if (s?.didJustFinish) cleanup();
+    });
+    // Fallback so a missed finish event never hangs the live loop.
+    timer = setTimeout(cleanup, durationS * 1000 + 400);
+    p.play();
+  });
+}
+
+// Pull complete sentences out of a running buffer. Anything after the last
+// sentence terminator stays buffered until more text arrives (or end()).
+function takeSentences(buf: string): { done: string[]; rest: string } {
+  const done: string[] = [];
+  let rest = buf;
+  const re = /^[\s\S]*?(?:[.!?\n]+|.{160,}?\s)/;
+  let m = re.exec(rest);
+  while (m) {
+    done.push(m[0]);
+    rest = rest.slice(m[0].length);
+    m = re.exec(rest);
+  }
+  return { done, rest };
+}
+
+export type SpeechStream = {
+  /** Feed streamed reply text; complete sentences are spoken as they form. */
+  push: (delta: string) => void;
+  /** No more text — resolves once everything queued has finished playing. */
+  end: () => Promise<void>;
+  /** Abort synthesis and playback immediately. */
+  cancel: () => void;
+};
+
+/**
+ * Stream speech sentence-by-sentence: the first sentence starts playing while
+ * the model is still generating the rest, cutting time-to-first-audio in live
+ * mode from "whole reply" down to "first sentence". Only one stream (or one-shot
+ * speak) is active at a time.
+ */
+export function speakStream(sid: number): SpeechStream {
+  activeStream?.cancel();
+  const mine = ++seq;
+  stopPlayer();
+  const owns = () => mine === seq;
+
+  let buffer = '';
+  const queue: string[] = [];
+  let ended = false;
+  let working = false;
+  let cancelled = false;
+  let drained: (() => void) | null = null;
+  let cancelClip: (() => void) | null = null;
+
+  const finishIfDrained = () => {
+    if (!working && queue.length === 0 && (ended || cancelled) && drained) {
+      const done = drained;
+      drained = null;
+      done();
+    }
+  };
+
+  async function work(): Promise<void> {
+    if (working) return;
+    working = true;
+    try {
+      while (queue.length && owns() && !cancelled) {
+        const clean = speakable(queue.shift()!);
+        if (!clean) continue;
+        const eng = await getEngine();
+        if (!owns() || cancelled) break;
+        const audio = await eng.generateSpeech(clean, { sid });
+        if (!owns() || cancelled) break;
+        const wavPath = `${FileSystem.cacheDirectory}tts-${mine}-${clipSeq++}.wav`;
+        await saveAudioToFile(audio, wavPath.replace('file://', ''));
+        await setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
+        if (!owns() || cancelled) {
+          void FileSystem.deleteAsync(wavPath, { idempotent: true }).catch(() => {});
+          break;
+        }
+        const rate = audio.sampleRate > 0 ? audio.sampleRate : 24000;
+        await playToEnd(wavPath, audio.samples.length / rate, (c) => (cancelClip = c));
+        cancelClip = null;
+      }
+    } finally {
+      working = false;
+      finishIfDrained();
+    }
+  }
+
+  const stream: SpeechStream = {
+    push(delta: string) {
+      if (cancelled || !owns()) return;
+      buffer += delta;
+      const { done, rest } = takeSentences(buffer);
+      buffer = rest;
+      if (done.length) {
+        queue.push(...done);
+        void work();
+      }
+    },
+    end() {
+      return new Promise<void>((resolve) => {
+        if (!cancelled && owns() && buffer.trim()) {
+          queue.push(buffer);
+          buffer = '';
+          void work();
+        }
+        ended = true;
+        drained = resolve;
+        finishIfDrained();
+      });
+    },
+    cancel() {
+      cancelled = true;
+      cancelClip?.();
+      cancelClip = null;
+      queue.length = 0;
+      if (activeStream === stream) activeStream = null;
+      finishIfDrained();
+    },
+  };
+  activeStream = stream;
+  return stream;
 }
 
 /** Release the current audio player without cancelling in-flight synthesis. */
@@ -143,9 +303,11 @@ function stopPlayer(): void {
   }
 }
 
-/** Stop any current playback and cancel in-flight synthesis. */
+/** Stop any current playback and cancel in-flight synthesis (one-shot or stream). */
 export function stop(): void {
   seq++;
+  activeStream?.cancel();
+  activeStream = null;
   stopPlayer();
 }
 

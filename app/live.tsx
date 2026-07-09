@@ -49,9 +49,6 @@ export default function Live() {
   const vadRef = useRef<VadHandle | null>(null);
   const historyRef = useRef<ChatMessage[]>([]);
 
-  const sleep = (ms: number) =>
-    new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, ms)));
-
   async function run() {
     const active = ModelManager.getActive();
     if (!active) {
@@ -101,27 +98,49 @@ export default function Live() {
         setCaption(text);
         historyRef.current.push({ role: 'user', content: text });
 
-        // 3. Think (generate reply)
+        // 3. Think + speak, streamed sentence-by-sentence: the first sentence
+        //    plays while the model is still generating the rest, so the reply
+        //    starts sounding out far sooner than waiting for the whole thing.
+        const speech = Tts.speakStream(voiceSid);
         let reply = '';
-        const res = await engineFor(active).generate(
-          [SYSTEM, ...historyRef.current],
-          (tok) => {
-            reply += tok;
-          },
-          { disableThinking: true },
-        );
-        reply = res.text || reply;
-        if (!aliveRef.current) return;
+        let started = false;
+        try {
+          const res = await engineFor(active).generate(
+            [SYSTEM, ...historyRef.current],
+            (tok) => {
+              reply += tok;
+              if (!aliveRef.current) return;
+              if (!started) {
+                started = true;
+                setPhase('speaking');
+              }
+              setCaption(reply);
+              speech.push(tok);
+            },
+            { disableThinking: true },
+          );
+          // Grammar/non-streaming fallback: use the final text if nothing streamed.
+          if (!reply.trim() && res.text) {
+            reply = res.text;
+            setPhase('speaking');
+            setCaption(reply);
+            speech.push(res.text);
+          }
+        } catch (e) {
+          speech.cancel();
+          throw e;
+        }
+        if (!aliveRef.current) {
+          speech.cancel();
+          return;
+        }
         historyRef.current.push({ role: 'assistant', content: reply });
         if (historyRef.current.length > MAX_HISTORY) {
           historyRef.current.splice(0, historyRef.current.length - MAX_HISTORY);
         }
-        setCaption(reply);
 
-        // 4. Speak, then wait for playback to finish before listening again.
-        setPhase('speaking');
-        const duration = await Tts.speak(reply, voiceSid);
-        await sleep(duration * 1000 + 250);
+        // 4. Wait for all queued speech to finish before listening again.
+        await speech.end();
         if (!aliveRef.current) return;
       } catch (e) {
         return fail(e); // any turn error → error screen, never a crash

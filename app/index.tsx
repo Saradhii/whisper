@@ -1,6 +1,6 @@
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -34,11 +34,17 @@ import * as ModelManager from '@/src/models/ModelManager';
 type ToolStatus = 'running' | 'done' | 'denied' | 'error';
 
 // UI message = chat message + optional attached image, or a tool-activity chip.
+// `id` is a stable identity so FlatList can reconcile rows (and skip re-rendering
+// settled bubbles) as the trailing assistant bubble grows during streaming.
 type UiMessage = ChatMessage & {
+  id: string;
   image?: string;
   tool?: { label: string; status: ToolStatus };
   error?: boolean;
 };
+
+let msgSeq = 0;
+const uid = () => `m${++msgSeq}`;
 
 export default function Chat() {
   const insets = useSafeAreaInsets();
@@ -59,6 +65,14 @@ export default function Chat() {
   const [thinking, setThinking] = useState(false);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const producedRef = useRef(false); // did this turn yield any visible output?
+  // Tokens arrive faster than React can paint. Buffer them and flush on an
+  // animation-frame cadence so streaming is one cheap update per frame instead
+  // of one full-list re-render per token (the main source of chat jank).
+  const pendingRef = useRef('');
+  const flushTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Id of the assistant bubble currently streaming — it renders as plain text
+  // (markdown is only parsed once, when the turn settles).
+  const [streamingId, setStreamingId] = useState<string | null>(null);
 
   // Voice input: transcribed text is appended to whatever's already typed.
   const voice = useVoiceInput((text) =>
@@ -73,6 +87,9 @@ export default function Chat() {
   useEffect(() => {
     void ModelManager.init();
     void TtsStore.init();
+    return () => {
+      if (flushTimer.current) clearTimeout(flushTimer.current);
+    };
   }, []);
 
   // (Re)load the engine whenever the active model changes; free native memory
@@ -111,25 +128,50 @@ export default function Chat() {
     if (!res.canceled && res.assets[0]) setImage(res.assets[0].uri);
   };
 
-  // Append a streamed token to the trailing assistant bubble (create one if
-  // the last message is a user turn or a tool chip).
-  const appendToken = (token: string) => {
+  // Drain buffered tokens into the trailing assistant bubble in one update
+  // (creating the bubble if the last message is a user turn or a tool chip).
+  const flushTokens = () => {
+    flushTimer.current = null;
+    const chunk = pendingRef.current;
+    if (!chunk) return;
+    pendingRef.current = '';
     setThinking(false); // first token arrived — hide the typing indicator
     producedRef.current = true;
     setMessages((prev) => {
       const next = [...prev];
       const last = next[next.length - 1];
       if (last && last.role === 'assistant' && !last.tool) {
-        next[next.length - 1] = { ...last, content: last.content + token };
+        next[next.length - 1] = { ...last, content: last.content + chunk };
+        setStreamingId(last.id);
       } else {
-        next.push({ role: 'assistant', content: token });
+        const msg: UiMessage = { id: uid(), role: 'assistant', content: chunk };
+        next.push(msg);
+        setStreamingId(msg.id);
       }
       return next;
     });
   };
 
+  // Buffer a streamed token; schedule a flush at ~30fps if one isn't pending.
+  const appendToken = (token: string) => {
+    pendingRef.current += token;
+    if (!flushTimer.current) flushTimer.current = setTimeout(flushTokens, 33);
+  };
+
+  // Flush any buffered tokens immediately (turn finished / a tool chip is about
+  // to be inserted, so ordering stays correct) and end the streaming state.
+  const finishStreaming = () => {
+    if (flushTimer.current) {
+      clearTimeout(flushTimer.current);
+      flushTimer.current = null;
+    }
+    flushTokens();
+    setStreamingId(null);
+  };
+
   const handleAgentEvent = (e: AgentEvent) => {
     if (e.type === 'token') return appendToken(e.token);
+    finishStreaming(); // land any buffered tokens before inserting the chip
     producedRef.current = true;
     // A tool is running (visible chip) → hide typing; once it finishes, the
     // model prefills again for its summary, so show the indicator once more.
@@ -144,7 +186,7 @@ export default function Chat() {
           return next;
         }
       }
-      next.push({ role: 'assistant', content: '', tool: { label: e.label, status: e.status } });
+      next.push({ id: uid(), role: 'assistant', content: '', tool: { label: e.label, status: e.status } });
       return next;
     });
   };
@@ -166,7 +208,7 @@ export default function Chat() {
       ...messages.filter((m) => !m.tool).map(stripImage),
       { role: 'user', content: text },
     ];
-    setMessages((prev) => [...prev, { role: 'user', content: text, image: attachedImage }]);
+    setMessages((prev) => [...prev, { id: uid(), role: 'user', content: text, image: attachedImage }]);
     setInput('');
     setImage(null);
     setBusy(true);
@@ -183,9 +225,10 @@ export default function Chat() {
       } else {
         await engineFor(active).generate(history, appendToken, { imageUri: attachedImage });
       }
+      finishStreaming(); // land the last buffered tokens and parse markdown
       // If the model produced nothing visible (e.g. stopped early), say so.
       if (!producedRef.current) {
-        setMessages((prev) => [...prev, { role: 'assistant', content: '(no response)' }]);
+        setMessages((prev) => [...prev, { id: uid(), role: 'assistant', content: '(no response)' }]);
       } else if (tts.enabled && tts.autoSpeak) {
         // Read the completed reply aloud.
         setMessages((prev) => {
@@ -196,8 +239,9 @@ export default function Chat() {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      setMessages((prev) => [...prev, { role: 'assistant', content: msg, error: true }]);
+      setMessages((prev) => [...prev, { id: uid(), role: 'assistant', content: msg, error: true }]);
     } finally {
+      finishStreaming();
       setBusy(false);
       setThinking(false);
     }
@@ -267,30 +311,23 @@ export default function Chat() {
           data={messages}
           style={styles.flex}
           contentContainerStyle={styles.listContent}
-          keyExtractor={(_, i) => String(i)}
-          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+          keyExtractor={(item) => item.id}
+          // Non-animated: streaming appends land many times a second, and
+          // animated scrolls stack up and fight each other into visible jank.
+          onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
           renderItem={({ item }) =>
             item.tool ? (
-              <ToolChip tool={item.tool} />
+              <ToolChip label={item.tool.label} status={item.tool.status} />
             ) : item.error ? (
-              <View style={[styles.bubble, styles.assistant, styles.errorBubble]}>
-                <Ionicons name="alert-circle" size={16} color={colors.danger} />
-                <Text style={styles.errorBubbleText}>{item.content}</Text>
-              </View>
+              <ErrorBubble content={item.content} />
             ) : item.role === 'user' ? (
-              <View style={[styles.bubble, styles.user]}>
-                {item.image ? (
-                  <Image source={{ uri: item.image }} style={styles.bubbleImage} />
-                ) : null}
-                {item.content || !item.image ? (
-                  <Text style={styles.userText}>{item.content || '…'}</Text>
-                ) : null}
-              </View>
+              <UserBubble content={item.content} image={item.image} />
             ) : (
               <AssistantBubble
                 content={item.content}
+                streaming={item.id === streamingId}
                 canSpeak={tts.enabled}
-                onSpeak={() => Tts.speak(item.content, tts.voiceSid)}
+                voiceSid={tts.voiceSid}
               />
             )
           }
@@ -381,27 +418,54 @@ export default function Chat() {
   );
 }
 
-// Tool-activity chip with a status icon (no emoji).
-function ToolChip({ tool }: { tool: { label: string; status: ToolStatus } }) {
+// Tool-activity chip with a status icon (no emoji). Memoized on primitive props
+// so settled chips don't re-render while a later bubble streams.
+const ToolChip = memo(function ToolChip({ label, status }: { label: string; status: ToolStatus }) {
   const icon =
-    tool.status === 'running'
+    status === 'running'
       ? { name: 'ellipsis-horizontal' as const, color: colors.textSecondary }
-      : tool.status === 'done'
+      : status === 'done'
         ? { name: 'checkmark-circle' as const, color: '#2e9e5b' }
-        : tool.status === 'denied'
+        : status === 'denied'
           ? { name: 'close-circle' as const, color: colors.textSecondary }
           : { name: 'alert-circle' as const, color: colors.danger };
-  const suffix = tool.status === 'denied' ? ' (denied)' : tool.status === 'error' ? ' (failed)' : '';
+  const suffix = status === 'denied' ? ' (denied)' : status === 'error' ? ' (failed)' : '';
   return (
     <View style={styles.toolChip}>
       <Ionicons name={icon.name} size={14} color={icon.color} />
       <Text style={styles.toolChipText}>
-        {tool.label}
+        {label}
         {suffix}
       </Text>
     </View>
   );
-}
+});
+
+// User turn: text and/or an attached image. Memoized (props are primitives).
+const UserBubble = memo(function UserBubble({
+  content,
+  image,
+}: {
+  content: string;
+  image?: string;
+}) {
+  return (
+    <View style={[styles.bubble, styles.user]}>
+      {image ? <Image source={{ uri: image }} style={styles.bubbleImage} /> : null}
+      {content || !image ? <Text style={styles.userText}>{content || '…'}</Text> : null}
+    </View>
+  );
+});
+
+// Error bubble. Memoized (settled, never re-renders during later streaming).
+const ErrorBubble = memo(function ErrorBubble({ content }: { content: string }) {
+  return (
+    <View style={[styles.bubble, styles.assistant, styles.errorBubble]}>
+      <Ionicons name="alert-circle" size={16} color={colors.danger} />
+      <Text style={styles.errorBubbleText}>{content}</Text>
+    </View>
+  );
+});
 
 // Header badge reflecting the uncensored canary self-test for the active model.
 function UncensoredBadge({ id }: { id: string }) {
@@ -430,14 +494,19 @@ function UncensoredBadge({ id }: { id: string }) {
 
 // Assistant message: hidden reasoning behind a collapsible "Thoughts" toggle
 // (visible live while streaming), final answer as markdown, optional speaker.
-function AssistantBubble({
+// Memoized on primitive props so only the actively streaming bubble re-renders.
+// While `streaming`, the answer is plain <Text> — markdown is parsed once, when
+// the turn settles, instead of re-parsing the whole growing string per frame.
+const AssistantBubble = memo(function AssistantBubble({
   content,
+  streaming,
   canSpeak,
-  onSpeak,
+  voiceSid,
 }: {
   content: string;
+  streaming: boolean;
   canSpeak: boolean;
-  onSpeak: () => void;
+  voiceSid: number;
 }) {
   const [showThoughts, setShowThoughts] = useState(false);
   const { thinking, answer } = splitThinking(content);
@@ -461,18 +530,22 @@ function AssistantBubble({
         <Text style={styles.thoughtsText}>{thinking}</Text>
       ) : null}
       {answer ? (
-        <Markdown style={markdownStyles}>{answer}</Markdown>
+        streaming ? (
+          <Text style={styles.bubbleText}>{answer}</Text>
+        ) : (
+          <Markdown style={markdownStyles}>{answer}</Markdown>
+        )
       ) : !thinking ? (
         <Text style={styles.bubbleText}>…</Text>
       ) : null}
-      {canSpeak && answer ? (
-        <Pressable style={styles.speakBtn} onPress={onSpeak} hitSlop={6}>
+      {canSpeak && answer && !streaming ? (
+        <Pressable style={styles.speakBtn} onPress={() => Tts.speak(answer, voiceSid)} hitSlop={6}>
           <Ionicons name="volume-medium-outline" size={16} color={colors.textSecondary} />
         </Pressable>
       ) : null}
     </View>
   );
-}
+});
 
 // Drop the UI-only `image` field and any reasoning before handing history back
 // to the model — replaying thoughts wastes context and confuses small models.
