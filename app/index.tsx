@@ -312,6 +312,11 @@ export default function Chat() {
           style={styles.flex}
           contentContainerStyle={styles.listContent}
           keyExtractor={(item) => item.id}
+          // Bounded batches keep long chats from mounting every past bubble at
+          // once (rows are memoized, so off-screen ones stay cheap).
+          initialNumToRender={12}
+          maxToRenderPerBatch={10}
+          windowSize={11}
           // Non-animated: streaming appends land many times a second, and
           // animated scrolls stack up and fight each other into visible jank.
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}

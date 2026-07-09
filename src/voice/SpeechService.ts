@@ -29,7 +29,10 @@ function buildWavBase64(pcm: Int16Array, sampleRate: number): string {
   buf.writeUInt16LE(16, 34); // bits per sample
   buf.write('data', 36);
   buf.writeUInt32LE(dataLen, 40);
-  for (let i = 0; i < pcm.length; i++) buf.writeInt16LE(pcm[i]!, 44 + i * 2);
+  // Bulk-copy the PCM bytes in one shot. The Int16Array is already little-endian
+  // in memory on ARM (all RN targets), matching the WAV layout — no per-sample
+  // writeInt16LE loop (that ran up to ~240k times for a 15 s utterance).
+  Buffer.from(pcm.buffer, pcm.byteOffset, dataLen).copy(buf, 44);
   return buf.toString('base64');
 }
 

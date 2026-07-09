@@ -16,11 +16,15 @@ let amplitude = 0; // 0..1 RMS of the most recent chunk, for the waveform
 
 function onData(base64: string): void {
   const bytes = Buffer.from(base64, 'base64');
-  // Interpret the byte buffer as little-endian Int16 PCM samples.
-  const samples = new Int16Array(Math.floor(bytes.length / 2));
-  for (let i = 0; i < samples.length; i++) {
-    samples[i] = bytes.readInt16LE(i * 2);
-  }
+  // Interpret the bytes as little-endian Int16 PCM. RN targets (iOS/Android) are
+  // all little-endian ARM, so an Int16 view over the raw bytes is correct — and
+  // one native slice+view is far cheaper than readInt16LE per sample (these
+  // chunks arrive many times a second). slice() copies out of Buffer's shared
+  // pool into a fresh, 2-byte-aligned buffer we own.
+  const evenBytes = bytes.byteLength & ~1;
+  const samples = new Int16Array(
+    bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + evenBytes),
+  );
   chunks.push(samples);
 
   // RMS amplitude of this chunk, normalized to ~0..1 for the waveform.
