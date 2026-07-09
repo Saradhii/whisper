@@ -67,8 +67,8 @@ describe('runAgent (grammar-constrained)', () => {
     ]);
     const events: AgentEvent[] = [];
     await runAgent(engine, [echoTool], [{ role: 'user', content: 'echo yo' }], cb(events));
-    expect(events).toContainEqual({ type: 'tool', label: 'Echo yo', status: 'running' });
-    expect(events).toContainEqual({ type: 'tool', label: 'Echo yo', status: 'done' });
+    expect(events).toContainEqual({ type: 'tool', name: 'echo', label: 'Echo yo', status: 'running' });
+    expect(events).toContainEqual({ type: 'tool', name: 'echo', label: 'Echo yo', status: 'done' });
     // The tool result is fed back into the conversation for the model.
     const withResult = seen.find((s) =>
       s.messages.some((m) => m.role === 'user' && m.content.startsWith('Result of echo:')),
@@ -98,7 +98,7 @@ describe('runAgent (grammar-constrained)', () => {
     ]);
     const events: AgentEvent[] = [];
     await runAgent(engine, [guardedTool], [{ role: 'user', content: 'x' }], cb(events, false));
-    expect(events).toContainEqual({ type: 'tool', label: 'Guarded action', status: 'denied' });
+    expect(events).toContainEqual({ type: 'tool', name: 'guarded', label: 'Guarded action', status: 'denied' });
     expect(
       seen.flatMap((s) => s.messages).find((m) => m.content.includes('Result of guarded:'))
         ?.content,
@@ -134,7 +134,7 @@ describe('runAgent (grammar-constrained)', () => {
     ]);
     const events: AgentEvent[] = [];
     await runAgent(engine, [boom], [{ role: 'user', content: 'x' }], cb(events));
-    expect(events).toContainEqual({ type: 'tool', label: 'Boom', status: 'error' });
+    expect(events).toContainEqual({ type: 'tool', name: 'boom', label: 'Boom', status: 'error' });
     expect(
       seen.flatMap((s) => s.messages).find((m) => m.content.includes('Result of boom:'))?.content,
     ).toBe('Result of boom: Tool error: kapow');

@@ -1,6 +1,6 @@
 import * as ImagePicker from 'expo-image-picker';
 import { router } from 'expo-router';
-import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { type ComponentProps, memo, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -39,7 +39,7 @@ type ToolStatus = 'running' | 'done' | 'denied' | 'error';
 type UiMessage = ChatMessage & {
   id: string;
   image?: string;
-  tool?: { label: string; status: ToolStatus };
+  tool?: { name: string; label: string; status: ToolStatus };
   error?: boolean;
 };
 
@@ -182,11 +182,16 @@ export default function Chat() {
       for (let i = next.length - 1; i >= 0; i--) {
         const m = next[i];
         if (m?.tool && m.tool.label === e.label && m.tool.status === 'running') {
-          next[i] = { ...m, tool: { label: e.label, status: e.status } };
+          next[i] = { ...m, tool: { name: e.name, label: e.label, status: e.status } };
           return next;
         }
       }
-      next.push({ id: uid(), role: 'assistant', content: '', tool: { label: e.label, status: e.status } });
+      next.push({
+        id: uid(),
+        role: 'assistant',
+        content: '',
+        tool: { name: e.name, label: e.label, status: e.status },
+      });
       return next;
     });
   };
@@ -322,7 +327,7 @@ export default function Chat() {
           onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
           renderItem={({ item }) =>
             item.tool ? (
-              <ToolChip label={item.tool.label} status={item.tool.status} />
+              <ToolChip name={item.tool.name} label={item.tool.label} status={item.tool.status} />
             ) : item.error ? (
               <ErrorBubble content={item.content} />
             ) : item.role === 'user' ? (
@@ -423,21 +428,58 @@ export default function Chat() {
   );
 }
 
-// Tool-activity chip with a status icon (no emoji). Memoized on primitive props
-// so settled chips don't re-render while a later bubble streams.
-const ToolChip = memo(function ToolChip({ label, status }: { label: string; status: ToolStatus }) {
-  const icon =
-    status === 'running'
-      ? { name: 'ellipsis-horizontal' as const, color: colors.textSecondary }
-      : status === 'done'
-        ? { name: 'checkmark-circle' as const, color: '#2e9e5b' }
-        : status === 'denied'
-          ? { name: 'close-circle' as const, color: colors.textSecondary }
-          : { name: 'alert-circle' as const, color: colors.danger };
+// Per-tool glyph (bundled Ionicons — no download). Keyed by the tool name the
+// agent loop reports, so "Read calendar" shows a calendar, "Set alarm" a clock,
+// and so on. Anything unmapped falls back to a generic tool icon.
+type IoniconName = ComponentProps<typeof Ionicons>['name'];
+const TOOL_ICONS: Record<string, IoniconName> = {
+  create_calendar_event: 'calendar-outline',
+  list_calendar_events: 'calendar-outline',
+  schedule_reminder: 'notifications-outline',
+  set_alarm: 'alarm-outline',
+  search_contacts: 'people-outline',
+  dial_number: 'call-outline',
+  compose_sms: 'chatbubble-ellipses-outline',
+  compose_email: 'mail-outline',
+  open_maps: 'map-outline',
+  open_url: 'open-outline',
+  web_search: 'search-outline',
+  web_fetch: 'globe-outline',
+  get_battery: 'battery-half-outline',
+  read_clipboard: 'clipboard-outline',
+  write_clipboard: 'clipboard-outline',
+  set_brightness: 'sunny-outline',
+  get_location: 'location-outline',
+  search_phone_media: 'images-outline',
+};
+
+// Tool-activity chip (no emoji). Memoized on primitive props so settled chips
+// don't re-render while a later bubble streams. The leading glyph is the tool's
+// own icon; a spinner shows while it runs; status is carried by colour + suffix.
+const ToolChip = memo(function ToolChip({
+  name,
+  label,
+  status,
+}: {
+  name: string;
+  label: string;
+  status: ToolStatus;
+}) {
+  const toolIcon = TOOL_ICONS[name] ?? 'construct-outline';
+  const color =
+    status === 'done'
+      ? '#2e9e5b'
+      : status === 'error'
+        ? colors.danger
+        : colors.textSecondary;
   const suffix = status === 'denied' ? ' (denied)' : status === 'error' ? ' (failed)' : '';
   return (
     <View style={styles.toolChip}>
-      <Ionicons name={icon.name} size={14} color={icon.color} />
+      {status === 'running' ? (
+        <ActivityIndicator size="small" color={colors.textSecondary} style={styles.toolSpinner} />
+      ) : (
+        <Ionicons name={status === 'error' ? 'alert-circle' : toolIcon} size={15} color={color} />
+      )}
       <Text style={styles.toolChipText}>
         {label}
         {suffix}
@@ -622,6 +664,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   toolChipText: { color: colors.textSecondary, fontSize: 12 },
+  toolSpinner: { width: 15, height: 15, transform: [{ scale: 0.7 }] },
   thoughtsToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
   speakBtn: { alignSelf: 'flex-start', marginTop: 6, paddingVertical: 2 },
   errorBubble: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },

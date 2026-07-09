@@ -14,7 +14,13 @@ const MAX_STEPS = 5;
 
 export type AgentEvent =
   | { type: 'token'; token: string }
-  | { type: 'tool'; label: string; status: 'running' | 'done' | 'denied' | 'error' };
+  | {
+      type: 'tool';
+      /** Tool key (e.g. 'list_calendar_events') — lets the UI pick an icon. */
+      name: string;
+      label: string;
+      status: 'running' | 'done' | 'denied' | 'error';
+    };
 
 export type AgentCallbacks = {
   onEvent: (e: AgentEvent) => void;
@@ -91,18 +97,19 @@ export async function runAgent(
     }
 
     const label = tool.label(decision.arguments);
+    const name = decision.name;
     let result: string;
     if (tool.requiresConfirmation && !(await confirm(label))) {
-      onEvent({ type: 'tool', label, status: 'denied' });
+      onEvent({ type: 'tool', name, label, status: 'denied' });
       result = 'The user denied this action. Do not retry it; ask what they want instead.';
     } else {
-      onEvent({ type: 'tool', label, status: 'running' });
+      onEvent({ type: 'tool', name, label, status: 'running' });
       try {
         result = await tool.run(decision.arguments);
-        onEvent({ type: 'tool', label, status: 'done' });
+        onEvent({ type: 'tool', name, label, status: 'done' });
       } catch (e) {
         result = `Tool error: ${e instanceof Error ? e.message : String(e)}`;
-        onEvent({ type: 'tool', label, status: 'error' });
+        onEvent({ type: 'tool', name, label, status: 'error' });
       }
     }
     messages.push({ role: 'assistant', content: res.text });
