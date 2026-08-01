@@ -2,8 +2,9 @@
 // one, and register custom GGUF URLs (e.g. any model from Hugging Face).
 import * as Device from 'expo-device';
 import * as FileSystem from 'expo-file-system/legacy';
+import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { router } from 'expo-router';
-import { useEffect, useState, useSyncExternalStore } from 'react';
+import { memo, useEffect, useState, useSyncExternalStore } from 'react';
 import {
   Alert,
   Pressable,
@@ -28,9 +29,11 @@ import {
   type SizeTier,
 } from '@/src/models/catalog';
 import * as ModelManager from '@/src/models/ModelManager';
-import { colors } from '@/src/theme';
+import { useTheme, useThemedStyles, type Colors } from '@/src/theme';
 
 export default function Models() {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
   const version = useSyncExternalStore(ModelManager.subscribe, ModelManager.getVersion);
 
@@ -48,6 +51,19 @@ export default function Models() {
     FileSystem.getFreeDiskStorageAsync().then(setFreeDisk).catch(() => {});
   }, [version]);
 
+  // Multi-GB downloads die with the screen (no foreground service) — keep it
+  // awake while anything is actively downloading and this screen is open.
+  const anyDownloading = ModelManager.allModels().some(
+    (m) => ModelManager.getStatus(m.id).downloading,
+  );
+  useEffect(() => {
+    if (!anyDownloading) return;
+    void activateKeepAwakeAsync('model-download');
+    return () => {
+      void deactivateKeepAwake('model-download');
+    };
+  }, [anyDownloading]);
+
   const active = ModelManager.getActive();
 
   const confirmDelete = (spec: ModelSpec) => {
@@ -64,10 +80,28 @@ export default function Models() {
     ]);
   };
 
-  const startDownload = (spec: ModelSpec) => {
+  const runDownload = (spec: ModelSpec) => {
     ModelManager.download(spec).catch((e: unknown) => {
       Alert.alert('Download failed', e instanceof Error ? e.message : String(e));
     });
+  };
+
+  // Multi-GB downloads deserve informed consent: size, data-cost hint, and the
+  // fact that it's one-time. Resumes (bytes already on disk) skip the prompt.
+  const startDownload = (spec: ModelSpec) => {
+    const status = ModelManager.getStatus(spec.id);
+    if (spec.sizeBytes < 500 * 1024 * 1024 || status.paused) {
+      runDownload(spec);
+      return;
+    }
+    Alert.alert(
+      `Download ${spec.name}?`,
+      `This is a one-time ${formatBytes(spec.sizeBytes)} download. On mobile data it may be slow and use up your plan — Wi-Fi is recommended. Keep the app open while it downloads; you can pause and resume anytime.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Download', onPress: () => runDownload(spec) },
+      ],
+    );
   };
 
   return (
@@ -124,6 +158,7 @@ export default function Models() {
                       isActive={active?.id === item.id}
                       deviceRam={deviceRam}
                       onDownload={() => startDownload(item)}
+                      onPause={() => void ModelManager.pauseDownload(item.id)}
                       onCancel={() => void ModelManager.cancelDownload(item.id)}
                       onDelete={() => confirmDelete(item)}
                       onUse={() => ModelManager.setActive(item.id)}
@@ -139,26 +174,34 @@ export default function Models() {
   );
 }
 
-function ModelRow({
-  spec,
-  status,
-  isActive,
-  deviceRam,
-  onDownload,
-  onCancel,
-  onDelete,
-  onUse,
-}: {
-  spec: ModelSpec;
-  status: ModelManager.ModelStatus;
-  isActive: boolean;
-  deviceRam: number | null;
-  onDownload: () => void;
-  onCancel: () => void;
-  onDelete: () => void;
-  onUse: () => void;
-}) {
-  const ramRisk = !!deviceRam && spec.minRamBytes > 0 && spec.minRamBytes > deviceRam;
+// Memoized on data props (callbacks are recreated per parent render but close
+// over the same stable spec, so they're excluded from the comparison) — during
+// a download only the downloading row re-renders, not all 8+ cards.
+const ModelRow = memo(
+  function ModelRow({
+    spec,
+    status,
+    isActive,
+    deviceRam,
+    onDownload,
+    onPause,
+    onCancel,
+    onDelete,
+    onUse,
+  }: {
+    spec: ModelSpec;
+    status: ModelManager.ModelStatus;
+    isActive: boolean;
+    deviceRam: number | null;
+    onDownload: () => void;
+    onPause: () => void;
+    onCancel: () => void;
+    onDelete: () => void;
+    onUse: () => void;
+  }) {
+    const { colors } = useTheme();
+    const styles = useThemedStyles(createStyles);
+    const ramRisk = !!deviceRam && spec.minRamBytes > 0 && spec.minRamBytes > deviceRam;
 
   return (
     <View style={styles.card}>
@@ -166,7 +209,8 @@ function ModelRow({
         <Text style={styles.cardTitle}>{spec.name}</Text>
         {spec.suggested ? (
           <View style={styles.suggestedTag}>
-            <Ionicons name="sparkles" size={11} color={colors.accentDeep} />
+            {/* Filled, not outline: at 11px an outline sparkle is mud. */}
+            <Ionicons name="sparkles" size={11} color={colors.primaryDeep} />
             <Text style={styles.suggestedText}>Suggested</Text>
           </View>
         ) : null}
@@ -187,41 +231,71 @@ function ModelRow({
         </View>
       ) : null}
 
-      {status.downloading ? (
-        <View style={styles.progressRow}>
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: `${status.progress * 100}%` }]} />
+      {status.downloading || status.paused ? (
+        <>
+          <View style={styles.progressRow}>
+            <View style={styles.progressTrack}>
+              <View style={[styles.progressFill, { width: `${status.progress * 100}%` }]} />
+            </View>
+            <Text style={styles.progressText}>{Math.round(status.progress * 100)}%</Text>
           </View>
-          <Text style={styles.progressText}>{Math.round(status.progress * 100)}%</Text>
-          <Pressable style={styles.btnGhost} onPress={onCancel}>
-            <Text style={styles.btnGhostText}>Cancel</Text>
-          </Pressable>
-        </View>
+          <View style={styles.actions}>
+            <Text style={styles.progressBytes}>
+              {status.paused ? 'Paused · ' : ''}
+              {formatBytes(status.bytesWritten)}
+              {status.bytesTotal > 0 ? ` of ${formatBytes(status.bytesTotal)}` : ''}
+            </Text>
+            {status.downloading ? (
+              <Pressable style={styles.btnGhost} onPress={onPause} accessibilityRole="button" accessibilityLabel={`Pause download of ${spec.name}`}>
+                <Text style={styles.btnGhostText}>Pause</Text>
+              </Pressable>
+            ) : (
+              <Pressable style={styles.btn} onPress={onDownload} accessibilityRole="button" accessibilityLabel={`Resume download of ${spec.name}`}>
+                <Text style={styles.btnText}>Resume</Text>
+              </Pressable>
+            )}
+            <Pressable style={styles.btnGhost} onPress={onCancel} accessibilityRole="button" accessibilityLabel={`Cancel download of ${spec.name}`}>
+              <Text style={styles.btnGhostText}>Cancel</Text>
+            </Pressable>
+          </View>
+        </>
       ) : (
         <View style={styles.actions}>
           {status.installed ? (
             <>
               {!isActive ? (
-                <Pressable style={styles.btn} onPress={onUse}>
+                <Pressable style={styles.btn} onPress={onUse} accessibilityRole="button" accessibilityLabel={`Use ${spec.name}`}>
                   <Text style={styles.btnText}>Use</Text>
                 </Pressable>
               ) : null}
-              <Pressable style={styles.btnGhost} onPress={onDelete}>
+              <Pressable style={styles.btnGhost} onPress={onDelete} accessibilityRole="button" accessibilityLabel={`Delete ${spec.name}`}>
                 <Text style={styles.btnDanger}>Delete</Text>
               </Pressable>
             </>
           ) : (
-            <Pressable style={styles.btn} onPress={onDownload}>
+            <Pressable style={styles.btn} onPress={onDownload} accessibilityRole="button" accessibilityLabel={`Download ${spec.name}`}>
               <Text style={styles.btnText}>Download</Text>
             </Pressable>
           )}
         </View>
       )}
     </View>
-  );
-}
+    );
+  },
+  (prev, next) =>
+    prev.spec === next.spec &&
+    prev.isActive === next.isActive &&
+    prev.deviceRam === next.deviceRam &&
+    prev.status.installed === next.status.installed &&
+    prev.status.downloading === next.status.downloading &&
+    prev.status.paused === next.status.paused &&
+    prev.status.progress === next.status.progress &&
+    prev.status.bytesWritten === next.status.bytesWritten,
+);
 
 function AddCustomModel() {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(createStyles);
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [modelUrl, setModelUrl] = useState('');
@@ -291,100 +365,102 @@ function AddCustomModel() {
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg },
-  header: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  backRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  back: { color: colors.primary, fontSize: 15 },
-  title: { color: colors.text, fontSize: 18, fontWeight: '700' },
-  subtitle: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
-  flex: { flex: 1 },
-  listContent: { padding: 12, gap: 14 },
-  group: {
-    borderWidth: 1.5,
-    borderColor: colors.borderStrong,
-    borderRadius: 16,
-    overflow: 'hidden',
-    gap: 10,
-    paddingBottom: 2,
-  },
-  groupHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    backgroundColor: '#fdf0ef',
-  },
-  groupTitle: { color: colors.text, fontSize: 15, fontWeight: '700' },
-  groupHint: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    padding: 14,
-    gap: 6,
-    marginHorizontal: 10,
-  },
-  suggestedTag: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    backgroundColor: '#efeafe',
-    borderRadius: 8,
-    paddingHorizontal: 7,
-    paddingVertical: 3,
-  },
-  suggestedText: { color: colors.accentDeep, fontSize: 11, fontWeight: '700' },
-  cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  cardTitle: { color: colors.text, fontSize: 15, fontWeight: '600', flexShrink: 1 },
-  activeBadge: { color: colors.primary, fontSize: 11, fontWeight: '700' },
-  cardDesc: { color: colors.textSecondary, fontSize: 13, lineHeight: 18 },
-  cardMeta: { color: colors.textFaint, fontSize: 12 },
-  warnRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 5 },
-  warn: { color: colors.warn, fontSize: 12, lineHeight: 17, flex: 1 },
-  actions: { flexDirection: 'row', gap: 10, marginTop: 6, alignItems: 'center' },
-  btn: {
-    backgroundColor: colors.primary,
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-  },
-  btnDisabled: { opacity: 0.4 },
-  btnText: { color: colors.onPrimary, fontWeight: '600', fontSize: 13 },
-  btnGhost: { paddingHorizontal: 10, paddingVertical: 8 },
-  btnGhostText: { color: colors.textSecondary, fontSize: 13 },
-  btnDanger: { color: colors.danger, fontSize: 13 },
-  progressRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
-  progressTrack: {
-    flex: 1,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.border,
-    overflow: 'hidden',
-  },
-  progressFill: { height: 6, borderRadius: 3, backgroundColor: colors.primary },
-  progressText: { color: colors.textSecondary, fontSize: 12, width: 36, textAlign: 'right' },
-  input: {
-    color: colors.text,
-    backgroundColor: colors.bg,
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    fontSize: 13,
-  },
-  advancedRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    paddingVertical: 12,
-  },
-  advancedToggle: {
-    color: colors.textFaint,
-    fontSize: 13,
-  },
-});
+const createStyles = (colors: Colors) =>
+  StyleSheet.create({
+    root: { flex: 1, backgroundColor: colors.bg },
+    header: {
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+    },
+    backRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+    back: { color: colors.primary, fontSize: 15 },
+    title: { color: colors.text, fontSize: 18, fontWeight: '700' },
+    subtitle: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
+    flex: { flex: 1 },
+    listContent: { padding: 12, gap: 14 },
+    group: {
+      borderWidth: 1.5,
+      borderColor: colors.borderStrong,
+      borderRadius: 16,
+      overflow: 'hidden',
+      gap: 10,
+      paddingBottom: 2,
+    },
+    groupHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      backgroundColor: colors.primarySoft,
+    },
+    groupTitle: { color: colors.text, fontSize: 15, fontWeight: '700' },
+    groupHint: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
+    card: {
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      padding: 14,
+      gap: 6,
+      marginHorizontal: 10,
+    },
+    suggestedTag: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 3,
+      backgroundColor: colors.primarySoft,
+      borderRadius: 8,
+      paddingHorizontal: 7,
+      paddingVertical: 3,
+    },
+    suggestedText: { color: colors.primaryDeep, fontSize: 11, fontWeight: '700' },
+    cardHeader: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+    cardTitle: { color: colors.text, fontSize: 15, fontWeight: '600', flexShrink: 1 },
+    activeBadge: { color: colors.primary, fontSize: 11, fontWeight: '700' },
+    cardDesc: { color: colors.textSecondary, fontSize: 13, lineHeight: 18 },
+    cardMeta: { color: colors.textFaint, fontSize: 12 },
+    warnRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 5 },
+    warn: { color: colors.warn, fontSize: 12, lineHeight: 17, flex: 1 },
+    actions: { flexDirection: 'row', gap: 10, marginTop: 6, alignItems: 'center' },
+    btn: {
+      backgroundColor: colors.primary,
+      borderRadius: 14,
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+    },
+    btnDisabled: { opacity: 0.4 },
+    btnText: { color: colors.onPrimary, fontWeight: '600', fontSize: 13 },
+    btnGhost: { paddingHorizontal: 10, paddingVertical: 8 },
+    btnGhostText: { color: colors.textSecondary, fontSize: 13 },
+    btnDanger: { color: colors.danger, fontSize: 13 },
+    progressRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
+    progressTrack: {
+      flex: 1,
+      height: 6,
+      borderRadius: 3,
+      backgroundColor: colors.border,
+      overflow: 'hidden',
+    },
+    progressFill: { height: 6, borderRadius: 3, backgroundColor: colors.primary },
+    progressText: { color: colors.textSecondary, fontSize: 12, width: 36, textAlign: 'right' },
+    progressBytes: { color: colors.textSecondary, fontSize: 12, flex: 1 },
+    input: {
+      color: colors.text,
+      backgroundColor: colors.bg,
+      borderRadius: 10,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      fontSize: 13,
+    },
+    advancedRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 4,
+      paddingVertical: 12,
+    },
+    advancedToggle: {
+      color: colors.textFaint,
+      fontSize: 13,
+    },
+  });

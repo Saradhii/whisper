@@ -26,6 +26,10 @@ export type AgentCallbacks = {
   onEvent: (e: AgentEvent) => void;
   /** Ask the user to approve a side-effecting action. */
   confirm: (summary: string) => Promise<boolean>;
+  /** Cooperative cancellation: the caller sets `aborted` (alongside
+   *  engine.stop(), which only interrupts the CURRENT completion) and the loop
+   *  exits between steps instead of planning further or answering. */
+  signal?: { aborted: boolean };
 };
 
 /** Render each tool as name + description + argument keys for the prompt. */
@@ -68,7 +72,7 @@ export async function runAgent(
   engine: Engine,
   tools: AnyTool[],
   history: ChatMessage[],
-  { onEvent, confirm }: AgentCallbacks,
+  { onEvent, confirm, signal }: AgentCallbacks,
   now: Date = new Date(),
 ): Promise<void> {
   const byName = new Map(tools.map((t) => [t.name, t]));
@@ -81,11 +85,13 @@ export async function runAgent(
   // Planning: constrained decisions, no streaming (output is control JSON).
   // A single decision object is tiny — cap it so a stray token stream can't run.
   for (let step = 0; step < MAX_STEPS; step++) {
+    if (signal?.aborted) return;
     const res = await engine.generate(messages, () => {}, {
       grammar,
       disableThinking: true,
       maxTokens: 256,
     });
+    if (signal?.aborted) return;
     const decision = parseDecision(res.text);
     if (decision.kind === 'respond') break;
 
@@ -117,6 +123,7 @@ export async function runAgent(
   }
 
   // Final answer: unconstrained, streamed to the user in natural language.
+  if (signal?.aborted) return;
   messages.push({
     role: 'user',
     content:

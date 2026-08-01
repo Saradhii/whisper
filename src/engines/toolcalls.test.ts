@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeToolCalls, toolCallReplay } from './toolcalls';
+import { normalizeToolCalls } from './toolcalls';
 
 describe('normalizeToolCalls', () => {
   it('fills a null id (the RN-bridge shape that crashed llama.cpp on replay)', () => {
@@ -39,18 +39,3 @@ describe('normalizeToolCalls', () => {
   });
 });
 
-describe('toolCallReplay', () => {
-  it('rebuilds an all-string OpenAI entry — no nulls can reach the native parser', () => {
-    const call = normalizeToolCalls([
-      { id: null, function: { name: 'x', arguments: '{"a":1}' } },
-    ])[0]!;
-    const replay = toolCallReplay(call);
-    expect(replay).toEqual({
-      type: 'function',
-      id: 'call_0',
-      function: { name: 'x', arguments: '{"a":1}' },
-    });
-    // Structural guarantee: serialized form contains no null anywhere.
-    expect(JSON.stringify(replay)).not.toContain('null');
-  });
-});

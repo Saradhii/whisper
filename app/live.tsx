@@ -3,6 +3,7 @@
 // current phase; a caption shows the latest transcript/reply. No emoji.
 import { Ionicons } from '@expo/vector-icons';
 import { requestRecordingPermissionsAsync } from 'expo-audio';
+import { useKeepAwake } from 'expo-keep-awake';
 import { router } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
@@ -10,7 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { engineFor, type ChatMessage } from '@/src/engines';
 import * as ModelManager from '@/src/models/ModelManager';
-import { colors } from '@/src/theme';
+import { useTheme, useThemedStyles, type Colors } from '@/src/theme';
 import LiveOrb, { type OrbPhase } from '@/src/voice/LiveOrb';
 import * as SpeechService from '@/src/voice/SpeechService';
 import * as Tts from '@/src/voice/tts/TtsService';
@@ -39,7 +40,11 @@ const CAPTIONS: Record<OrbPhase, string> = {
 };
 
 export default function Live() {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
+  // A hands-free conversation must not be ended by the screen dozing off.
+  useKeepAwake();
   const [phase, setPhase] = useState<OrbPhase>('connecting');
   const [level, setLevel] = useState(0);
   const [caption, setCaption] = useState('');
@@ -58,7 +63,7 @@ export default function Live() {
     }
     const perm = await requestRecordingPermissionsAsync();
     if (!perm.granted) {
-      setError('Microphone permission denied.');
+      setError('Microphone access is off. Allow it in Settings to talk to Whisper.');
       setPhase('error');
       return;
     }
@@ -170,6 +175,15 @@ export default function Live() {
     router.back();
   };
 
+  // A transient failure (mic grab, audio glitch, one bad turn) shouldn't end
+  // the session — restart the loop with the conversation so far intact.
+  const retry = () => {
+    aliveRef.current = true;
+    setError(null);
+    setPhase('connecting');
+    void run();
+  };
+
   useEffect(() => {
     aliveRef.current = true;
     // Defer so the loop's first setState isn't synchronous within the effect.
@@ -198,35 +212,69 @@ export default function Live() {
       </View>
 
       <View style={styles.controls}>
-        <Pressable style={styles.endBtn} onPress={exit} accessibilityLabel="End live conversation">
-          <Ionicons name="close" size={28} color={colors.onPrimary} />
-        </Pressable>
-        <Text style={styles.endLabel}>End</Text>
+        {phase === 'error' ? (
+          <View style={styles.controlCol}>
+            <Pressable
+              style={styles.retryBtn}
+              onPress={retry}
+              accessibilityRole="button"
+              accessibilityLabel="Retry live conversation">
+              <Ionicons name="refresh-outline" size={26} color={colors.onPrimary} />
+            </Pressable>
+            <Text style={styles.endLabel}>Retry</Text>
+          </View>
+        ) : null}
+        <View style={styles.controlCol}>
+          <Pressable
+            style={styles.endBtn}
+            onPress={exit}
+            accessibilityRole="button"
+            accessibilityLabel="End live conversation">
+            <Ionicons name="close-outline" size={28} color={colors.onPrimary} />
+          </Pressable>
+          <Text style={styles.endLabel}>End</Text>
+        </View>
       </View>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg, alignItems: 'center' },
-  top: { paddingVertical: 12 },
-  title: { color: colors.text, fontSize: 16, fontWeight: '700' },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 40, paddingHorizontal: 32 },
-  caption: {
-    color: colors.textSecondary,
-    fontSize: 17,
-    lineHeight: 24,
-    textAlign: 'center',
-    minHeight: 72,
-  },
-  controls: { alignItems: 'center', gap: 8, paddingBottom: 24 },
-  endBtn: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: colors.danger,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  endLabel: { color: colors.textSecondary, fontSize: 13 },
-});
+const createStyles = (colors: Colors) =>
+  StyleSheet.create({
+    root: { flex: 1, backgroundColor: colors.bg, alignItems: 'center' },
+    top: { paddingVertical: 12 },
+    title: { color: colors.text, fontSize: 16, fontWeight: '700' },
+    center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 40, paddingHorizontal: 32 },
+    caption: {
+      color: colors.textSecondary,
+      fontSize: 17,
+      lineHeight: 24,
+      textAlign: 'center',
+      minHeight: 72,
+    },
+    controls: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      justifyContent: 'center',
+      gap: 40,
+      paddingBottom: 24,
+    },
+    controlCol: { alignItems: 'center', gap: 8 },
+    endBtn: {
+      width: 64,
+      height: 64,
+      borderRadius: 32,
+      backgroundColor: colors.danger,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    retryBtn: {
+      width: 64,
+      height: 64,
+      borderRadius: 32,
+      backgroundColor: colors.primary,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    endLabel: { color: colors.textSecondary, fontSize: 13 },
+  });

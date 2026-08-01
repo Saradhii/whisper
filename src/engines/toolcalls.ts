@@ -56,12 +56,3 @@ export function normalizeToolCalls(raw: unknown): CleanToolCall[] {
   return clean;
 }
 
-/** Rebuild an OpenAI-style tool_calls entry from clean values (all strings —
- * structurally incapable of carrying a null back to the native parser). */
-export function toolCallReplay(c: CleanToolCall): {
-  type: 'function';
-  id: string;
-  function: { name: string; arguments: string };
-} {
-  return { type: 'function', id: c.id, function: { name: c.name, arguments: c.argumentsJson } };
-}

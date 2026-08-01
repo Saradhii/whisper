@@ -20,7 +20,13 @@ export async function ensureVerified(spec: ModelSpec): Promise<void> {
   const engine = engineFor(spec);
   const generate = async (prompt: string): Promise<string> => {
     const messages: AgentMessage[] = [{ role: 'user', content: prompt }];
-    const res = await engine.generate(messages, () => {});
+    // Engine calls are queued, so a user message sent mid-canary waits behind
+    // these generations — keep them short. Refusal boilerplate shows up in the
+    // first sentences, so a low cap loses nothing.
+    const res = await engine.generate(messages, () => {}, {
+      maxTokens: 160,
+      disableThinking: true,
+    });
     return res.text;
   };
 

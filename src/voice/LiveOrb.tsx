@@ -11,11 +11,12 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
-import { colors } from '@/src/theme';
+import { useTheme } from '@/src/theme';
 
 export type OrbPhase = 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
 
 export default function LiveOrb({ phase, level }: { phase: OrbPhase; level: number }) {
+  const { colors } = useTheme();
   // Auto-animation used for non-listening phases.
   const auto = useSharedValue(0);
   // Smoothed amplitude for the listening phase.
@@ -55,14 +56,17 @@ export default function LiveOrb({ phase, level }: { phase: OrbPhase; level: numb
     return { transform: [{ scale: 1 + 0.5 * d }], opacity: 0.25 + 0.25 * d };
   });
 
+  // A violet ramp, not a hue change: the orb is the voice surface, so every
+  // phase stays in the accent family and only the brightness moves. (Speaking
+  // used to be blue, the one color in the app that belonged to no palette.)
   const tint =
     phase === 'error'
       ? colors.danger
       : phase === 'listening'
-        ? colors.primary
+        ? colors.accent
         : phase === 'speaking'
-          ? '#5b8cf5'
-          : colors.primaryDeep;
+          ? colors.accentSoft
+          : colors.accentDeep;
 
   return (
     <View style={styles.wrap}>

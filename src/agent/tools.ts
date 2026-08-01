@@ -23,6 +23,29 @@ async function ensure(granted: boolean, what: string): Promise<void> {
   if (!granted) throw new Error(`Permission for ${what} was denied by the user.`);
 }
 
+// Network tools run inside the agent loop — an unbounded fetch means the whole
+// chat sits on a spinning tool chip with no way out. Hard timeout everything.
+const FETCH_TIMEOUT_MS = 12_000;
+const BROWSER_UA = 'Mozilla/5.0 (Android 15; Mobile)';
+
+async function fetchWithTimeout(url: string): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    return await fetch(url, {
+      headers: { 'User-Agent': BROWSER_UA },
+      signal: controller.signal,
+    });
+  } catch (e) {
+    if (controller.signal.aborted) {
+      throw new Error(`The request timed out after ${FETCH_TIMEOUT_MS / 1000}s. The network may be slow or offline.`);
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function defaultCalendar(): Promise<{ id: string; title: string }> {
   const cals = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
   // Prefer a calendar backed by a real account (shows up in Google Calendar),
@@ -54,6 +77,8 @@ function htmlToText(html: string): string {
     .trim();
 }
 
+// Note the trailing platform filter: advertising a tool the platform can't
+// execute (set_alarm on iOS) makes the model call it, fail, and apologize.
 export const TOOLS: AnyTool[] = [
   defineTool({
     name: 'create_calendar_event',
@@ -195,10 +220,12 @@ export const TOOLS: AnyTool[] = [
     name: 'web_search',
     ...TOOL_DEFS.web_search,
     execute: async (a) => {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://html.duckduckgo.com/html/?q=${encodeURIComponent(a.query)}`,
-        { headers: { 'User-Agent': 'Mozilla/5.0 (Android 15; Mobile)' } },
       );
+      if (!res.ok) {
+        throw new Error(`Search failed (HTTP ${res.status}). Try again in a moment.`);
+      }
       const html = await res.text();
       const results: string[] = [];
       const re =
@@ -220,9 +247,18 @@ export const TOOLS: AnyTool[] = [
     name: 'web_fetch',
     ...TOOL_DEFS.web_fetch,
     execute: async (a) => {
-      const res = await fetch(a.url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Android 15; Mobile)' },
-      });
+      const res = await fetchWithTimeout(a.url);
+      if (!res.ok) throw new Error(`The page returned HTTP ${res.status}.`);
+      // Guard before materializing the body: a binary or huge response would
+      // otherwise be fully buffered in JS memory just to be thrown away.
+      const type = res.headers.get('content-type') ?? '';
+      if (type && !/text|html|json|xml/i.test(type)) {
+        throw new Error(`Not a readable page (content-type: ${type.split(';')[0]}).`);
+      }
+      const length = Number(res.headers.get('content-length') ?? 0);
+      if (length > 5 * 1024 * 1024) {
+        throw new Error('Page is too large to read (over 5 MB).');
+      }
       const text = htmlToText(await res.text());
       return text.slice(0, 4000) || 'Page had no readable text.';
     },
@@ -302,4 +338,4 @@ export const TOOLS: AnyTool[] = [
         .join('\n');
     },
   }),
-];
+].filter((t) => Platform.OS === 'android' || t.name !== 'set_alarm');

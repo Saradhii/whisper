@@ -6,7 +6,7 @@
     "orientation": "portrait",
     "scheme": "whisper",
     "icon": "./assets/icon.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
@@ -22,7 +22,11 @@
       "package": "com.whisper.app",
       "versionCode": 3,
       "edgeToEdgeEnabled": true,
-      "permissions": ["android.permission.RECORD_AUDIO"],
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.POST_NOTIFICATIONS",
+        "com.android.alarm.permission.SET_ALARM"
+      ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-foreground.png",
         "backgroundImage": "./assets/adaptive-background.png"
@@ -30,6 +34,7 @@
     },
     "plugins": [
       "./plugins/withArm64Only",
+      "./plugins/withMmkvSecureWipeFix",
       "expo-router",
       [
         "expo-image-picker",
@@ -72,7 +77,12 @@
           "imageWidth": 64
         }
       ],
-      "expo-audio"
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Whisper listens through the microphone only while you use voice input or live conversation — speech is transcribed on this device and never uploaded."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

@@ -2,7 +2,7 @@
 // (before the first token streams). On CPU with tool schemas this wait is
 // several seconds, so this reassures the user the request is being processed.
 import { useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, type ViewStyle } from 'react-native';
 import Animated, {
   Easing,
   useAnimatedStyle,
@@ -13,9 +13,9 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 
-import { colors } from '@/src/theme';
+import { useThemedStyles, type Colors } from '@/src/theme';
 
-function Dot({ delay }: { delay: number }) {
+function Dot({ delay, style: dotStyle }: { delay: number; style: ViewStyle }) {
   const t = useSharedValue(0);
   useEffect(() => {
     t.value = withDelay(
@@ -33,29 +33,31 @@ function Dot({ delay }: { delay: number }) {
     opacity: 0.3 + 0.7 * t.value,
     transform: [{ translateY: -3 * t.value }],
   }));
-  return <Animated.View style={[styles.dot, style]} />;
+  return <Animated.View style={[dotStyle, style]} />;
 }
 
 export default function TypingIndicator() {
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.bubble}>
-      <Dot delay={0} />
-      <Dot delay={150} />
-      <Dot delay={300} />
+      <Dot delay={0} style={styles.dot} />
+      <Dot delay={150} style={styles.dot} />
+      <Dot delay={300} style={styles.dot} />
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  bubble: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.textFaint },
-});
+const createStyles = (colors: Colors) =>
+  StyleSheet.create({
+    bubble: {
+      alignSelf: 'flex-start',
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 5,
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      paddingHorizontal: 16,
+      paddingVertical: 14,
+    },
+    dot: { width: 7, height: 7, borderRadius: 4, backgroundColor: colors.textFaint },
+  });

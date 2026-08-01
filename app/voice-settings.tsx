@@ -16,12 +16,14 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { colors } from '@/src/theme';
+import { useTheme, useThemedStyles, type Colors } from '@/src/theme';
 import * as Tts from '@/src/voice/tts/TtsService';
 import * as TtsStore from '@/src/voice/tts/TtsStore';
 import { PREVIEW_TEXT, VOICES, type Voice } from '@/src/voice/tts/voices';
 
 export default function VoiceSettings() {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
   useSyncExternalStore(TtsStore.subscribe, TtsStore.getVersion);
   const settings = TtsStore.get();
@@ -100,9 +102,9 @@ export default function VoiceSettings() {
                 onPress={() => preview(item)}
                 disabled={previewing != null}>
                 {busy ? (
-                  <ActivityIndicator size="small" color={colors.primary} />
+                  <ActivityIndicator size="small" color={colors.accent} />
                 ) : (
-                  <Ionicons name="play" size={18} color={colors.primary} />
+                  <Ionicons name="play-outline" size={18} color={colors.accent} />
                 )}
               </Pressable>
               <View style={styles.flex}>
@@ -135,6 +137,8 @@ function Row({
   value: boolean;
   onValueChange: (v: boolean) => void;
 }) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(createStyles);
   return (
     <View style={styles.settingRow}>
       <View style={styles.flex}>
@@ -151,52 +155,53 @@ function Row({
   );
 }
 
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.bg },
-  flex: { flex: 1 },
-  header: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  backRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
-  back: { color: colors.primary, fontSize: 15 },
-  title: { color: colors.text, fontSize: 18, fontWeight: '700' },
-  subtitle: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
-  listContent: { padding: 12, gap: 10 },
-  card: { backgroundColor: colors.surface, borderRadius: 14, padding: 6 },
-  settingRow: { flexDirection: 'row', alignItems: 'center', padding: 10, gap: 12 },
-  settingLabel: { color: colors.text, fontSize: 15, fontWeight: '600' },
-  settingHint: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
-  downloading: { color: colors.textSecondary, fontSize: 12, paddingHorizontal: 10, paddingBottom: 8 },
-  voiceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  voiceRowActive: { borderColor: colors.primary },
-  playBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: colors.bg,
-  },
-  voiceName: { color: colors.text, fontSize: 15, fontWeight: '600' },
-  voiceDesc: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
-  activeTag: { color: colors.primary, fontSize: 11, fontWeight: '700' },
-  useBtn: {
-    backgroundColor: colors.primary,
-    borderRadius: 14,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-  },
-  useText: { color: colors.onPrimary, fontWeight: '600', fontSize: 13 },
-});
+const createStyles = (colors: Colors) =>
+  StyleSheet.create({
+    root: { flex: 1, backgroundColor: colors.bg },
+    flex: { flex: 1 },
+    header: {
+      paddingHorizontal: 16,
+      paddingVertical: 12,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+    },
+    backRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 4 },
+    back: { color: colors.primary, fontSize: 15 },
+    title: { color: colors.text, fontSize: 18, fontWeight: '700' },
+    subtitle: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
+    listContent: { padding: 12, gap: 10 },
+    card: { backgroundColor: colors.surface, borderRadius: 14, padding: 6 },
+    settingRow: { flexDirection: 'row', alignItems: 'center', padding: 10, gap: 12 },
+    settingLabel: { color: colors.text, fontSize: 15, fontWeight: '600' },
+    settingHint: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
+    downloading: { color: colors.textSecondary, fontSize: 12, paddingHorizontal: 10, paddingBottom: 8 },
+    voiceRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      backgroundColor: colors.surface,
+      borderRadius: 14,
+      padding: 12,
+      borderWidth: 1,
+      borderColor: 'transparent',
+    },
+    voiceRowActive: { borderColor: colors.primary },
+    playBtn: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: colors.bg,
+    },
+    voiceName: { color: colors.text, fontSize: 15, fontWeight: '600' },
+    voiceDesc: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
+    activeTag: { color: colors.primary, fontSize: 11, fontWeight: '700' },
+    useBtn: {
+      backgroundColor: colors.primary,
+      borderRadius: 14,
+      paddingHorizontal: 16,
+      paddingVertical: 8,
+    },
+    useText: { color: colors.onPrimary, fontWeight: '600', fontSize: 13 },
+  });

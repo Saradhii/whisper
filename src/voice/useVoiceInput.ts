@@ -12,7 +12,7 @@ export type VoiceState =
   | { status: 'downloading'; progress: number } // first-use model fetch
   | { status: 'recording' }
   | { status: 'transcribing' }
-  | { status: 'error'; message: string };
+  | { status: 'error'; message: string; canOpenSettings?: boolean };
 
 export function useVoiceInput(onText: (text: string) => void) {
   const [state, setState] = useState<VoiceState>({ status: 'idle' });
@@ -23,7 +23,11 @@ export function useVoiceInput(onText: (text: string) => void) {
     try {
       const perm = await requestRecordingPermissionsAsync();
       if (!perm.granted) {
-        setState({ status: 'error', message: 'Microphone permission denied.' });
+        setState({
+          status: 'error',
+          message: 'Microphone access is off. Allow it in Settings to talk to Whisper.',
+          canOpenSettings: true,
+        });
         return;
       }
       // Pre-fetch the whisper model on first use so recording isn't wasted if

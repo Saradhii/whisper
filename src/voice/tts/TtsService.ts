@@ -119,7 +119,7 @@ export async function speak(text: string, sid: number): Promise<number> {
   if (mine !== seq) return 0; // superseded while synthesizing
   const wavPath = `${FileSystem.cacheDirectory}tts-${mine}.wav`;
   await saveAudioToFile(audio, wavPath.replace('file://', ''));
-  await setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
+  await setAudioModeAsync({ playsInSilentMode: true, interruptionMode: 'doNotMix' }).catch(() => {});
   if (mine !== seq) return 0;
   stopPlayer(); // stop the previous utterance's audio, keep our seq ownership
   player = createAudioPlayer(wavPath);
@@ -234,7 +234,7 @@ export function speakStream(sid: number): SpeechStream {
         if (!owns() || cancelled) break;
         const wavPath = `${FileSystem.cacheDirectory}tts-${mine}-${clipSeq++}.wav`;
         await saveAudioToFile(audio, wavPath.replace('file://', ''));
-        await setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
+        await setAudioModeAsync({ playsInSilentMode: true, interruptionMode: 'doNotMix' }).catch(() => {});
         if (!owns() || cancelled) {
           void FileSystem.deleteAsync(wavPath, { idempotent: true }).catch(() => {});
           break;

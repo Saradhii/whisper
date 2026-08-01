@@ -3,28 +3,39 @@
 // presentational — polls currentAmplitude() on an interval while `active`.
 // State is one shared array (not one hook per bar) to respect rules-of-hooks.
 import { useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, type ViewStyle } from 'react-native';
 import Animated, {
   type SharedValue,
   useAnimatedStyle,
   useSharedValue,
 } from 'react-native-reanimated';
 
-import { colors } from '@/src/theme';
+import { useThemedStyles, type Colors } from '@/src/theme';
 import { currentAmplitude } from './recorder';
 
 const BAR_COUNT = 28;
 const TICK_MS = 70;
 
-function Bar({ levels, index }: { levels: SharedValue<number[]>; index: number }) {
+// The bar style is passed in rather than looked up per bar: 28 of these mount
+// at once and they all share one style.
+function Bar({
+  levels,
+  index,
+  style: barStyle,
+}: {
+  levels: SharedValue<number[]>;
+  index: number;
+  style: ViewStyle;
+}) {
   const style = useAnimatedStyle(() => {
     const v = levels.value[index] ?? 0;
     return { height: 4 + v * 26, opacity: 0.4 + v * 0.6 };
   });
-  return <Animated.View style={[styles.bar, style]} />;
+  return <Animated.View style={[barStyle, style]} />;
 }
 
 export default function Waveform({ active }: { active: boolean }) {
+  const styles = useThemedStyles(createStyles);
   const levels = useSharedValue<number[]>(new Array(BAR_COUNT).fill(0));
 
   useEffect(() => {
@@ -44,24 +55,26 @@ export default function Waveform({ active }: { active: boolean }) {
   return (
     <View style={styles.row}>
       {Array.from({ length: BAR_COUNT }, (_, i) => (
-        <Bar key={i} levels={levels} index={i} />
+        <Bar key={i} levels={levels} index={i} style={styles.bar} />
       ))}
     </View>
   );
 }
 
-const styles = StyleSheet.create({
-  row: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-evenly',
-    height: 44,
-    paddingHorizontal: 8,
-  },
-  bar: {
-    width: 3,
-    borderRadius: 2,
-    backgroundColor: colors.primary,
-  },
-});
+const createStyles = (colors: Colors) =>
+  StyleSheet.create({
+    row: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-evenly',
+      height: 44,
+      paddingHorizontal: 8,
+    },
+    bar: {
+      width: 3,
+      borderRadius: 2,
+      // Violet, not red: the waveform is part of the voice surface.
+      backgroundColor: colors.accent,
+    },
+  });

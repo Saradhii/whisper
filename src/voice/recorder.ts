@@ -59,10 +59,6 @@ export function currentAmplitude(): number {
   return recording ? amplitude : 0;
 }
 
-export function isRecording(): boolean {
-  return recording;
-}
-
 /**
  * Stop recording and return the captured audio as one mono Int16Array at
  * 16 kHz (ready to wrap in a WAV for whisper), or null if nothing was

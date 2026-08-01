@@ -60,10 +60,3 @@ export function defineTool<S extends z.ZodRawShape>(def: {
   };
 }
 
-/** OpenAI-style declarations for a tool list, to pass to the engine. */
-export function toolSchemas(tools: AnyTool[]): unknown[] {
-  return tools.map((t) => ({
-    type: 'function' as const,
-    function: { name: t.name, description: t.description, parameters: t.jsonSchema },
-  }));
-}

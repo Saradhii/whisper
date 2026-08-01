@@ -40,7 +40,6 @@ function buildWavBase64(pcm: Int16Array, sampleRate: number): string {
 const WHISPER_URL =
   'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin';
 const WHISPER_PATH = FileSystem.documentDirectory + 'whisper-base-q5_1.bin';
-export const WHISPER_SIZE_BYTES = 56 * 1024 ** 2;
 
 export type STTProgress = { phase: 'downloading' | 'loading'; progress: number };
 
