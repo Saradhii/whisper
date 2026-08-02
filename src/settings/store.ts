@@ -12,6 +12,13 @@ const SettingsSchema = z.object({
   personaExtra: z.string().max(600).catch(''),
   /** Light / dark / follow the OS. Resolved by ThemeProvider. */
   appearance: z.enum(['light', 'dark', 'system']).catch('system'),
+  /** Record agent planning decisions and tool results for the trace viewer.
+   *  Off by default — it is a developer surface, and recording is a no-op
+   *  until this is on. */
+  devTrace: z.boolean().catch(false),
+  /** Show each planning decision inline in the chat as a collapsible row.
+   *  Independent of devTrace: this one is about the conversation, not the log. */
+  showPlanSteps: z.boolean().catch(false),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -21,6 +28,8 @@ const DEFAULTS: Settings = {
   maxTokens: 1024,
   personaExtra: '',
   appearance: 'system',
+  devTrace: false,
+  showPlanSteps: false,
 };
 const PATH = FileSystem.documentDirectory + 'settings.json';
 

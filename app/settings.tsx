@@ -3,7 +3,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useEffect, useSyncExternalStore } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as Settings from '@/src/settings/store';
@@ -127,6 +127,54 @@ export default function SettingsScreen() {
           maxLength={600}
         />
 
+        <Text style={styles.sectionTitle}>Developer</Text>
+        <Text style={styles.hint}>
+          For debugging tool use. The trace stays in memory and is never written to disk.
+        </Text>
+        <Pressable
+          style={styles.toggleRow}
+          onPress={() => Settings.set({ showPlanSteps: !s.showPlanSteps })}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: s.showPlanSteps }}
+          accessibilityLabel="Show planning steps in chat">
+          <View style={styles.toggleLabels}>
+            <Text style={styles.toggleTitle}>Show planning steps</Text>
+            <Text style={styles.toggleHint}>Each tool decision, inline in the chat</Text>
+          </View>
+          <Switch
+            value={s.showPlanSteps}
+            onValueChange={(v) => Settings.set({ showPlanSteps: v })}
+            trackColor={{ true: colors.primary, false: colors.border }}
+            thumbColor={colors.bg}
+          />
+        </Pressable>
+        <Pressable
+          style={styles.toggleRow}
+          onPress={() => Settings.set({ devTrace: !s.devTrace })}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: s.devTrace }}
+          accessibilityLabel="Record agent trace">
+          <View style={styles.toggleLabels}>
+            <Text style={styles.toggleTitle}>Record agent trace</Text>
+            <Text style={styles.toggleHint}>Decisions, tool results, and timings</Text>
+          </View>
+          <Switch
+            value={s.devTrace}
+            onValueChange={(v) => Settings.set({ devTrace: v })}
+            trackColor={{ true: colors.primary, false: colors.border }}
+            thumbColor={colors.bg}
+          />
+        </Pressable>
+        <Pressable
+          style={styles.linkRow}
+          onPress={() => router.push('/agent-trace')}
+          accessibilityRole="button"
+          accessibilityLabel="View agent trace">
+          <Ionicons name="pulse-outline" size={20} color={colors.icon} />
+          <Text style={styles.linkText}>Agent trace</Text>
+          <Ionicons name="chevron-forward" size={16} color={colors.textFaint} />
+        </Pressable>
+
         <Text style={styles.privacy}>
           Whisper runs entirely on this phone. Chats, voice, and settings stay on-device. The
           only network use is downloading models and, if the assistant uses them, web search
@@ -161,6 +209,18 @@ const createStyles = (colors: Colors) =>
       marginBottom: 6,
     },
     linkText: { color: colors.text, fontSize: 15, fontWeight: '600', flex: 1 },
+    toggleRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      backgroundColor: colors.surface,
+      borderRadius: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+    },
+    toggleLabels: { flex: 1, gap: 1 },
+    toggleTitle: { color: colors.text, fontSize: 14.5, fontWeight: '600' },
+    toggleHint: { color: colors.textFaint, fontSize: 11.5 },
     sectionTitle: { color: colors.text, fontSize: 14, fontWeight: '700', marginTop: 14 },
     hint: { color: colors.textSecondary, fontSize: 12.5, lineHeight: 18 },
     chipRow: { flexDirection: 'row', gap: 8 },

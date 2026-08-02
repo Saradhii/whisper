@@ -4,11 +4,12 @@ import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
-import { Component, useEffect, useState, type ReactNode } from 'react';
+import { Component, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import * as Trace from '@/src/agent/trace';
 import { installEngineLifecycle } from '@/src/engines/lifecycle';
 import * as Settings from '@/src/settings/store';
 import AnimatedSplash from '@/src/splash/AnimatedSplash';
@@ -105,6 +106,15 @@ export default function RootLayout() {
   useEffect(() => {
     void Settings.init();
   }, []);
+
+  // Agent tracing is cross-cutting config, so it's wired at the composition
+  // root rather than inside either store — that keeps trace.ts a pure module
+  // (no Expo imports) and therefore unit-testable in Node.
+  useSyncExternalStore(Settings.subscribe, Settings.getVersion);
+  const devTrace = Settings.get().devTrace;
+  useEffect(() => {
+    Trace.setEnabled(devTrace);
+  }, [devTrace]);
 
   return (
     <SafeAreaProvider>

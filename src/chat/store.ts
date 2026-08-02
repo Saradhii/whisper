@@ -17,12 +17,22 @@ export type StoredTool = {
   status: 'done' | 'denied' | 'error';
 };
 
+/** A grammar-constrained planning decision, kept so reopening a conversation
+ *  still shows how the agent decided (rendered only when the user has plan
+ *  steps switched on). */
+export type StoredPlan = {
+  step: number;
+  text: string;
+  forced?: boolean;
+};
+
 export type StoredMessage = {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   image?: string;
   tool?: StoredTool;
+  plan?: StoredPlan;
   error?: boolean;
 };
 
@@ -43,6 +53,13 @@ const StoredMessageSchema: z.ZodType<StoredMessage> = z.object({
       name: z.string(),
       label: z.string(),
       status: z.enum(['done', 'denied', 'error']),
+    })
+    .optional(),
+  plan: z
+    .object({
+      step: z.number(),
+      text: z.string(),
+      forced: z.boolean().optional(),
     })
     .optional(),
   error: z.boolean().optional(),

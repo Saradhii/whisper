@@ -18,6 +18,7 @@ import {
   FlatList,
   Image,
   Linking,
+  Platform,
   Pressable,
   Share,
   StyleSheet,
@@ -31,8 +32,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Ionicons } from '@expo/vector-icons';
 
+import { parseDecision } from '@/src/agent/grammar';
 import { runAgent, type AgentEvent } from '@/src/agent/loop';
+import { TOOL_PROMPT_RESERVE } from '@/src/agent/prompt';
 import { TOOLS } from '@/src/agent/tools';
+import * as Trace from '@/src/agent/trace';
 import DrawerMenu from '@/src/chat/DrawerMenu';
 import TypingIndicator from '@/src/chat/TypingIndicator';
 import Waveform from '@/src/voice/Waveform';
@@ -44,23 +48,25 @@ import { useVoiceInput } from '@/src/voice/useVoiceInput';
 import { splitThinking } from '@/src/chat/thinking';
 import { estimateTokens, trimToBudget, type CountedMessage } from '@/src/chat/historyBudget';
 import * as ChatStore from '@/src/chat/store';
-import type { StoredMessage } from '@/src/chat/store';
 import { engineFor, unloadAll, type ChatMessage, type Engine } from '@/src/engines';
 import { humanizeLoadError } from '@/src/models/loadErrors';
 import * as ModelManager from '@/src/models/ModelManager';
 import * as Settings from '@/src/settings/store';
 
-type ToolStatus = 'running' | 'done' | 'denied' | 'error';
-
-// UI message = chat message + optional attached image, or a tool-activity chip.
-// `id` is a stable identity so FlatList can reconcile rows (and skip re-rendering
-// settled bubbles) as the trailing assistant bubble grows during streaming.
-type UiMessage = ChatMessage & {
-  id: string;
-  image?: string;
-  tool?: { name: string; label: string; status: ToolStatus };
-  error?: boolean;
-};
+// The transcript row model and every transition over it live in chat/rows.ts —
+// pure functions on an array, so the mutations (a confirmation card becoming a
+// running chip becoming a settled one) are unit-tested rather than buried in
+// setState updaters where they silently swallowed the model's answer.
+import {
+  appendText,
+  applyToolEvent,
+  cancelConfirms,
+  isMachinery,
+  resolveConfirm,
+  toStored,
+  type ToolStatus,
+  type UiMessage,
+} from '@/src/chat/rows';
 
 // Message ids are prefixed with a per-launch tag so ids minted this session
 // can never collide with ids restored from a previous session's conversation.
@@ -78,9 +84,11 @@ const chatSystemPrompt = (now: Date, personaExtra: string) =>
   (personaExtra.trim() ? `\nUser instructions: ${personaExtra.trim()}` : '');
 
 // Context budget: leave room for the reply and the system/tool scaffolding.
-// Agent turns need more headroom (tool results are appended mid-loop).
+// An agent turn's scaffolding is much larger than a chat turn's — the tool
+// catalog, the worked examples, and the decisions and results the loop appends
+// as it goes — so its reserve is owned by the prompt module that produces it.
 const historyBudget = (nCtx: number, tools: boolean, maxTokens: number) =>
-  Math.max(512, nCtx - (tools ? 1536 : Math.max(768, maxTokens + 256)));
+  Math.max(512, nCtx - (tools ? TOOL_PROMPT_RESERVE : Math.max(768, maxTokens + 256)));
 
 // First-chat suggestions: make capabilities discoverable — nothing else in the
 // UI tells the user the assistant can touch alarms, calendar, or the web.
@@ -96,31 +104,6 @@ const SUGGESTIONS_PLAIN = [
   'Give me a dinner idea from basic pantry stuff',
   'Write a short bedtime story',
 ];
-
-// UiMessage ↔ persisted message. System turns never persist; a tool chip still
-// marked "running" at save time means the turn was interrupted — store it as
-// failed rather than eternally spinning.
-const toStored = (m: UiMessage): StoredMessage[] => {
-  if (m.role === 'system') return [];
-  return [
-    {
-      id: m.id,
-      role: m.role,
-      content: m.content,
-      ...(m.image ? { image: m.image } : {}),
-      ...(m.tool
-        ? {
-            tool: {
-              name: m.tool.name,
-              label: m.tool.label,
-              status: m.tool.status === 'running' ? ('error' as const) : m.tool.status,
-            },
-          }
-        : {}),
-      ...(m.error ? { error: true } : {}),
-    },
-  ];
-};
 
 export default function Chat() {
   const { colors } = useTheme();
@@ -268,16 +251,7 @@ export default function Chat() {
     producedRef.current = true;
     lastBubbleTextRef.current += chunk;
     const newId = uid(); // minted outside the updater — updaters must be pure
-    setMessages((prev) => {
-      const next = [...prev];
-      const last = next[next.length - 1];
-      if (last && last.role === 'assistant' && !last.tool && !last.error) {
-        next[next.length - 1] = { ...last, content: last.content + chunk };
-      } else {
-        next.push({ id: newId, role: 'assistant', content: chunk });
-      }
-      return next;
-    });
+    setMessages((prev) => appendText(prev, chunk, newId));
   };
 
   // Buffer a streamed token; schedule a flush at ~30fps if one isn't pending.
@@ -296,49 +270,73 @@ export default function Chat() {
     flushTokens();
   };
 
+  // Close out the current assistant bubble so a non-prose row (chip, plan step,
+  // confirmation) lands after it in the right order. Deliberately does NOT set
+  // producedRef — a turn that emitted only planning rows and then died still
+  // owes the user the "I didn't manage to reply" notice.
+  const breakBubble = () => {
+    finishStreaming(); // land any buffered tokens first
+    lastBubbleTextRef.current = '';
+  };
+
   const handleAgentEvent = (e: AgentEvent) => {
     if (e.type === 'token') return appendToken(e.token);
-    finishStreaming(); // land any buffered tokens before inserting the chip
-    lastBubbleTextRef.current = ''; // the chip ends the current bubble
-    producedRef.current = true;
+
+    if (e.type === 'plan') {
+      // Planning happens during prefill, before anything visible — keep the
+      // typing indicator up, the decision row is not an answer. Read straight
+      // from the store, not the render scope: this runs inside a closure the
+      // agent loop captured at send time, so a render-scope read would be
+      // stale for the rest of the turn.
+      if (!Settings.get().showPlanSteps) return;
+      breakBubble();
+      const id = uid();
+      setMessages((prev) => [
+        ...prev,
+        { id, role: 'assistant', content: '', plan: { step: e.step, text: e.text, forced: e.forced } },
+      ]);
+      return;
+    }
+
+    breakBubble();
+    producedRef.current = true; // a tool chip is real output for this turn
     // A tool is running (visible chip) → hide typing; once it finishes, the
     // model prefills again for its summary, so show the indicator once more.
     setThinking(e.status !== 'running');
-    // Tool chip: update the running chip with the same label, else append one.
-    setMessages((prev) => {
-      const next = [...prev];
-      for (let i = next.length - 1; i >= 0; i--) {
-        const m = next[i];
-        if (m?.tool && m.tool.label === e.label && m.tool.status === 'running') {
-          next[i] = { ...m, tool: { name: e.name, label: e.label, status: e.status } };
-          return next;
-        }
-      }
-      next.push({
-        id: uid(),
-        role: 'assistant',
-        content: '',
-        tool: { name: e.name, label: e.label, status: e.status },
-      });
-      return next;
-    });
+    const newId = uid(); // minted outside the updater — updaters must be pure
+    setMessages((prev) => applyToolEvent(prev, e, newId));
   };
 
-  // Dismissing the alert any way other than the buttons (Android back button,
-  // tap outside) must also resolve — an unresolved promise here would leave
-  // the agent loop, and therefore the whole chat, stuck busy forever.
-  const confirmAction = (summary: string) =>
+  // Inline confirmation: an Allow/Deny card in the transcript rather than a
+  // native modal. The promise resolvers live in a ref keyed by row id — an
+  // unresolved one would leave the agent loop, and therefore the whole chat,
+  // stuck busy forever, so stop() drains them and every path resolves exactly
+  // once.
+  const confirmResolvers = useRef(new Map<string, (allow: boolean) => void>());
+
+  const confirmAction = (summary: string, name: string) =>
     new Promise<boolean>((resolve) => {
-      Alert.alert(
-        'Allow this action?',
-        summary,
-        [
-          { text: 'Deny', style: 'cancel', onPress: () => resolve(false) },
-          { text: 'Allow', onPress: () => resolve(true) },
-        ],
-        { cancelable: true, onDismiss: () => resolve(false) },
-      );
+      const id = uid();
+      confirmResolvers.current.set(id, resolve);
+      breakBubble();
+      producedRef.current = true;
+      setThinking(false); // the ball is in the user's court, not the model's
+      setMessages((prev) => [
+        ...prev,
+        { id, role: 'assistant', content: '', confirm: { name, label: summary } },
+      ]);
     });
+
+  // Answer a pending card: resolve the loop's promise and convert the row in
+  // place into the tool chip it becomes, so the transcript reads as one item.
+  const answerConfirm = useCallback((id: string, allow: boolean) => {
+    const resolve = confirmResolvers.current.get(id);
+    if (!resolve) return;
+    confirmResolvers.current.delete(id);
+    setMessages((prev) => resolveConfirm(prev, id, allow));
+    setThinking(allow);
+    resolve(allow);
+  }, []);
 
   // Tokenizer count for a settled message, cached by message id. Falls back to
   // a length estimate if the engine can't count (or errors).
@@ -370,7 +368,7 @@ export default function Chat() {
   const regenerate = () => {
     if (busy || !ready || !active) return;
     let idx = messages.length - 1;
-    while (idx >= 0 && !(messages[idx]!.role === 'user' && !messages[idx]!.tool)) idx--;
+    while (idx >= 0 && !(messages[idx]!.role === 'user' && !isMachinery(messages[idx]!))) idx--;
     if (idx < 0) return;
     const kept = messages.slice(0, idx + 1);
     setMessages(kept);
@@ -386,12 +384,13 @@ export default function Chat() {
     producedRef.current = false;
     lastBubbleTextRef.current = '';
     abortRef.current = { aborted: false };
+    Trace.startTurn(); // group this turn's steps in the trace viewer
 
     try {
       const useTools = !!active.tools && !attachedImage;
       // Budget the history to the model's context window (see historyBudget.ts
       // for why trims are rare-but-large: KV-cache prefix reuse).
-      const source = turnMessages.filter((m) => !m.tool && !m.error);
+      const source = turnMessages.filter((m) => !isMachinery(m));
       const counted: CountedMessage<ChatMessage>[] = [];
       for (const m of source) {
         const stripped = stripImage(m);
@@ -446,6 +445,13 @@ export default function Chat() {
 
   const stop = () => {
     abortRef.current.aborted = true; // agent loop exits between steps
+    // A card still waiting on the user would hold the loop open forever —
+    // stopping counts as declining.
+    for (const [id, resolve] of confirmResolvers.current) {
+      confirmResolvers.current.delete(id);
+      resolve(false);
+    }
+    setMessages(cancelConfirms);
     if (active) void engineFor(active).stop(); // interrupt the current completion
   };
 
@@ -489,7 +495,7 @@ export default function Chat() {
 
   const lastAssistantId = [...messages]
     .reverse()
-    .find((m) => m.role === 'assistant' && !m.tool && !m.error)?.id;
+    .find((m) => m.role === 'assistant' && !isMachinery(m))?.id;
 
   // The trailing assistant bubble renders as plain <Text> while the turn is
   // busy; markdown is parsed once, when the turn settles. Derived — no state
@@ -607,8 +613,17 @@ export default function Chat() {
           onScroll={onListScroll}
           scrollEventThrottle={100}
           renderItem={({ item }) =>
-            item.tool ? (
-              <ToolChip name={item.tool.name} label={item.tool.label} status={item.tool.status} />
+            item.confirm ? (
+              <ConfirmCard
+                id={item.id}
+                name={item.confirm.name}
+                label={item.confirm.label}
+                onAnswer={answerConfirm}
+              />
+            ) : item.plan ? (
+              <PlanRow step={item.plan.step} text={item.plan.text} forced={item.plan.forced} />
+            ) : item.tool ? (
+              <ToolChip label={item.tool.label} status={item.tool.status} />
             ) : item.error ? (
               <ErrorBubble content={item.content} />
             ) : item.role === 'user' ? (
@@ -794,39 +809,137 @@ const TOOL_ICONS: Record<string, IoniconName> = {
   search_phone_media: 'images-outline',
 };
 
-// Tool-activity chip (no emoji). Memoized on primitive props so settled chips
-// don't re-render while a later bubble streams. The leading glyph is the tool's
-// own icon; a spinner shows while it runs; status is carried by colour + suffix.
+// Tool-activity chip. Memoized on primitive props so settled chips don't
+// re-render while a later bubble streams.
+//
+// The leading glyph is the STATUS, not the tool: at chip size one icon reads
+// instantly and two compete, and by the time a chip has settled the only
+// question left is "did that work?". The tool's own glyph does the identifying
+// job earlier, on the confirmation card, where there is room for it.
 const ToolChip = memo(function ToolChip({
-  name,
   label,
   status,
 }: {
-  name: string;
   label: string;
   status: ToolStatus;
 }) {
   const { colors } = useTheme();
   const styles = useThemedStyles(createStyles);
-  const toolIcon = TOOL_ICONS[name] ?? 'construct-outline';
+  const icon: IoniconName =
+    status === 'done'
+      ? 'checkmark-circle'
+      : status === 'error'
+        ? 'alert-circle'
+        : 'close-circle';
   const color =
     status === 'done'
       ? colors.success
       : status === 'error'
         ? colors.danger
-        : colors.textSecondary;
-  const suffix = status === 'denied' ? ' (denied)' : status === 'error' ? ' (failed)' : '';
+        : colors.textFaint;
+  const suffix = status === 'denied' ? ' · denied' : status === 'error' ? ' · failed' : '';
   return (
     <View style={styles.toolChip}>
       {status === 'running' ? (
         <ActivityIndicator size="small" color={colors.textSecondary} style={styles.toolSpinner} />
       ) : (
-        <Ionicons name={status === 'error' ? 'alert-circle-outline' : toolIcon} size={15} color={color} />
+        <Ionicons name={icon} size={17} color={color} />
       )}
-      <Text style={styles.toolChipText}>
+      <Text style={styles.toolChipText} numberOfLines={2}>
         {label}
         {suffix}
       </Text>
+    </View>
+  );
+});
+
+// Pending side-effecting action: Allow/Deny inline in the transcript instead of
+// a native modal. A modal for "set an alarm" reads as an error dialog and rips
+// the user out of the conversation; here the request stays in place, keeps the
+// tool's own glyph for identification, and converts into its chip once answered.
+const ConfirmCard = memo(function ConfirmCard({
+  id,
+  name,
+  label,
+  onAnswer,
+}: {
+  id: string;
+  name: string;
+  label: string;
+  onAnswer: (id: string, allow: boolean) => void;
+}) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(createStyles);
+  return (
+    <View style={styles.confirmCard}>
+      <View style={styles.confirmHead}>
+        <Ionicons name={TOOL_ICONS[name] ?? 'construct-outline'} size={18} color={colors.primary} />
+        <Text style={styles.confirmLabel}>{label}</Text>
+      </View>
+      <View style={styles.confirmActions}>
+        <Pressable
+          style={[styles.confirmBtn, styles.confirmDeny]}
+          onPress={() => onAnswer(id, false)}
+          accessibilityRole="button"
+          accessibilityLabel={`Deny: ${label}`}>
+          <Text style={styles.confirmDenyText}>Deny</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.confirmBtn, styles.confirmAllow]}
+          onPress={() => onAnswer(id, true)}
+          accessibilityRole="button"
+          accessibilityLabel={`Allow: ${label}`}>
+          <Text style={styles.confirmAllowText}>Allow</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+});
+
+// A single grammar-constrained planning decision, collapsed by default. This is
+// the agent's reasoning made literal: the model's choice between calling a tool
+// and answering is exactly one JSON object, so showing it is more honest (and
+// far shorter) than free-text chain-of-thought.
+const PlanRow = memo(function PlanRow({
+  step,
+  text,
+  forced,
+}: {
+  step: number;
+  text: string;
+  forced?: boolean;
+}) {
+  const { colors } = useTheme();
+  const styles = useThemedStyles(createStyles);
+  const [open, setOpen] = useState(false);
+  // Summarize the decision so the collapsed row is still informative.
+  const decision = parseDecision(text);
+  const summary =
+    decision.kind === 'tool'
+      ? `call ${decision.name}`
+      : decision.malformed
+        ? 'unreadable decision'
+        : 'answer directly';
+  return (
+    <View style={styles.planWrap}>
+      <Pressable
+        style={styles.planRow}
+        onPress={() => setOpen((v) => !v)}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: open }}
+        accessibilityLabel={`Planning step ${step + 1}: ${summary}`}>
+        <Ionicons
+          name={open ? 'chevron-down' : 'chevron-forward'}
+          size={12}
+          color={colors.textFaint}
+        />
+        <Text style={styles.planText}>
+          {forced ? 'Retry · ' : `Step ${step + 1} · `}
+          {summary}
+        </Text>
+      </Pressable>
+      {open ? <Text style={styles.planJson}>{text}</Text> : null}
     </View>
   );
 });
@@ -1033,20 +1146,62 @@ const createStyles = (colors: Colors) =>
     assistant: { alignSelf: 'flex-start', backgroundColor: colors.surface },
     userText: { color: colors.onPrimary, fontSize: 15, lineHeight: 21 },
     bubbleText: { color: colors.text, fontSize: 15, lineHeight: 21 },
+    // Fully rounded pill, sized between a chip and a bubble: it sits in the
+    // same column as the assistant's replies but must never be mistaken for
+    // one, so it stays borderless-light with a status glyph and no tail.
     toolChip: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 6,
+      gap: 8,
       alignSelf: 'flex-start',
+      maxWidth: '85%',
       backgroundColor: colors.surface,
-      borderRadius: 10,
+      borderRadius: 999,
       borderWidth: StyleSheet.hairlineWidth,
       borderColor: colors.border,
-      paddingHorizontal: 10,
-      paddingVertical: 6,
+      paddingLeft: 12,
+      paddingRight: 16,
+      paddingVertical: 9,
     },
-    toolChipText: { color: colors.textSecondary, fontSize: 12 },
-    toolSpinner: { width: 15, height: 15, transform: [{ scale: 0.7 }] },
+    toolChipText: { color: colors.textSecondary, fontSize: 13.5, flexShrink: 1 },
+    toolSpinner: { width: 17, height: 17, transform: [{ scale: 0.75 }] },
+
+    // Confirmation card: a real surface with actions, not a chip — it is the
+    // one row in the transcript that blocks the turn on the user.
+    confirmCard: {
+      alignSelf: 'flex-start',
+      maxWidth: '90%',
+      backgroundColor: colors.surface,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: colors.borderStrong,
+      paddingHorizontal: 14,
+      paddingVertical: 12,
+      gap: 12,
+    },
+    confirmHead: { flexDirection: 'row', alignItems: 'center', gap: 9 },
+    confirmLabel: { color: colors.text, fontSize: 14.5, lineHeight: 20, flexShrink: 1 },
+    confirmActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8 },
+    confirmBtn: { borderRadius: 999, paddingHorizontal: 18, paddingVertical: 9 },
+    confirmDeny: { backgroundColor: colors.surfaceSunken },
+    confirmDenyText: { color: colors.textSecondary, fontSize: 13.5, fontWeight: '600' },
+    confirmAllow: { backgroundColor: colors.primary },
+    confirmAllowText: { color: colors.onPrimary, fontSize: 13.5, fontWeight: '600' },
+
+    // Planning steps sit visually *below* every other row — no surface, faint
+    // text — because they are machinery the user opted into seeing, not part
+    // of the conversation.
+    planWrap: { alignSelf: 'flex-start', maxWidth: '90%', paddingLeft: 2 },
+    planRow: { flexDirection: 'row', alignItems: 'center', gap: 5 },
+    planText: { color: colors.textFaint, fontSize: 11.5, fontWeight: '600' },
+    planJson: {
+      color: colors.textFaint,
+      fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+      fontSize: 11,
+      lineHeight: 16,
+      marginTop: 4,
+      marginLeft: 17,
+    },
     thoughtsToggle: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 2 },
     speakBtn: { alignSelf: 'flex-start', marginTop: 6, paddingVertical: 2 },
     bubbleActionsRow: {

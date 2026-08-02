@@ -16,7 +16,7 @@ import * as MediaLibrary from 'expo-media-library';
 import * as Notifications from 'expo-notifications';
 import { Linking, Platform } from 'react-native';
 
-import { TOOL_DEFS } from './toolDefs';
+import { atTime, mediaMatches, TOOL_DEFS } from './toolDefs';
 import { defineTool, type AnyTool } from './types';
 
 async function ensure(granted: boolean, what: string): Promise<void> {
@@ -87,14 +87,14 @@ export const TOOLS: AnyTool[] = [
       const { granted } = await Calendar.requestCalendarPermissionsAsync();
       await ensure(granted, 'calendar');
       const cal = await defaultCalendar();
+      const start = atTime(a.date, a.hour, a.minute);
       await Calendar.createEventAsync(cal.id, {
         title: a.title,
-        startDate: a.start,
-        endDate: a.end ?? new Date(+a.start + 3600_000),
+        startDate: start,
+        endDate: new Date(+start + a.duration_minutes * 60_000),
         location: a.location,
-        notes: a.notes,
       });
-      return `Event "${a.title}" created for ${a.start.toLocaleString()} in the "${cal.title}" calendar.`;
+      return `Event "${a.title}" created for ${start.toLocaleString()} in the "${cal.title}" calendar.`;
     },
   }),
   defineTool({
@@ -104,11 +104,11 @@ export const TOOLS: AnyTool[] = [
       const { granted } = await Calendar.requestCalendarPermissionsAsync();
       await ensure(granted, 'calendar');
       const cals = await Calendar.getCalendarsAsync(Calendar.EntityTypes.EVENT);
-      const events = await Calendar.getEventsAsync(
-        cals.map((c) => c.id),
-        a.start,
-        a.end,
-      );
+      // The range is given in whole days, so widen it to cover them fully —
+      // otherwise "today to today" is a zero-length window at midnight.
+      const from = atTime(a.start, 0, 0);
+      const to = atTime(a.end, 23, 59);
+      const events = await Calendar.getEventsAsync(cals.map((c) => c.id), from, to);
       if (!events.length) return 'No events in that range.';
       return events
         .slice(0, 20)
@@ -122,7 +122,17 @@ export const TOOLS: AnyTool[] = [
     execute: async (a) => {
       const { granted } = await Notifications.requestPermissionsAsync();
       await ensure(granted, 'notifications');
-      if (+a.when <= Date.now()) throw new Error('Reminder time must be in the future.');
+      const when = atTime(a.date, a.hour, a.minute);
+      // The message is the model's only feedback channel, so it carries the
+      // fix, not just the complaint: on device the planner set a reminder for
+      // the current minute, was told "must be in the future", and moved it a
+      // whole day rather than an hour.
+      if (+when <= Date.now()) {
+        throw new Error(
+          `That time (${when.toLocaleString()}) has already passed — it is now ` +
+            `${new Date().toLocaleTimeString()}. Call again with a later time.`,
+        );
+      }
       if (Platform.OS === 'android') {
         await Notifications.setNotificationChannelAsync('reminders', {
           name: 'Reminders',
@@ -131,9 +141,9 @@ export const TOOLS: AnyTool[] = [
       }
       await Notifications.scheduleNotificationAsync({
         content: { title: 'Reminder', body: a.message },
-        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: a.when },
+        trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: when },
       });
-      return `Reminder set for ${a.when.toLocaleString()}.`;
+      return `Reminder set for ${when.toLocaleString()}.`;
     },
   }),
   defineTool({
@@ -329,8 +339,7 @@ export const TOOLS: AnyTool[] = [
         mediaType: type,
         sortBy: [[MediaLibrary.SortBy.creationTime, false]],
       });
-      const q = a.query.toLowerCase();
-      const hits = page.assets.filter((x) => !q || x.filename.toLowerCase().includes(q));
+      const hits = page.assets.filter((x) => mediaMatches(x.filename, a.query));
       if (!hits.length) return 'No matching files found.';
       return hits
         .slice(0, 15)
