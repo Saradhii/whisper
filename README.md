@@ -68,5 +68,3 @@ the APK — download them from the in-app Models screen.
   is usable but not fast — expect a wait per reply).
 - GGUFs carry their own chat template, so prompts are formatted correctly per
   model.
-- Custom models: paste a direct `resolve/main/...gguf` Hugging Face URL on the
-  Models screen; add the matching mmproj URL to enable vision.
