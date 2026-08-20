@@ -7,7 +7,6 @@ import { router } from 'expo-router';
 import { memo, useEffect, useState, useSyncExternalStore } from 'react';
 import {
   Alert,
-  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -29,7 +28,7 @@ import {
   type SizeTier,
 } from '@/src/models/catalog';
 import * as ModelManager from '@/src/models/ModelManager';
-import { useTheme, useThemedStyles, type Colors } from '@/src/theme';
+import { Touchable, useTheme, useThemedStyles, type Colors } from '@/src/theme';
 
 export default function Models() {
   const { colors } = useTheme();
@@ -107,10 +106,10 @@ export default function Models() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable style={styles.backRow} onPress={() => router.back()} hitSlop={12}>
+        <Touchable style={styles.backRow} onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="chevron-back" size={18} color={colors.primary} />
           <Text style={styles.back}>Chat</Text>
-        </Pressable>
+        </Touchable>
         <Text style={styles.title}>Models</Text>
         <Text style={styles.subtitle}>
           {deviceRam ? `${formatBytes(deviceRam)} RAM` : 'RAM unknown'}
@@ -126,7 +125,7 @@ export default function Models() {
           const open = openTiers.has(tier);
           return (
             <View key={tier} style={styles.group}>
-              <Pressable
+              <Touchable
                 style={styles.groupHeader}
                 onPress={() =>
                   setOpenTiers((prev) => {
@@ -148,7 +147,7 @@ export default function Models() {
                   size={20}
                   color={colors.primary}
                 />
-              </Pressable>
+              </Touchable>
               {open
                 ? models.map((item) => (
                     <ModelRow
@@ -246,17 +245,17 @@ const ModelRow = memo(
               {status.bytesTotal > 0 ? ` of ${formatBytes(status.bytesTotal)}` : ''}
             </Text>
             {status.downloading ? (
-              <Pressable style={styles.btnGhost} onPress={onPause} accessibilityRole="button" accessibilityLabel={`Pause download of ${spec.name}`}>
+              <Touchable style={styles.btnGhost} onPress={onPause} accessibilityRole="button" accessibilityLabel={`Pause download of ${spec.name}`}>
                 <Text style={styles.btnGhostText}>Pause</Text>
-              </Pressable>
+              </Touchable>
             ) : (
-              <Pressable style={styles.btn} onPress={onDownload} accessibilityRole="button" accessibilityLabel={`Resume download of ${spec.name}`}>
+              <Touchable style={styles.btn} onPress={onDownload} accessibilityRole="button" accessibilityLabel={`Resume download of ${spec.name}`}>
                 <Text style={styles.btnText}>Resume</Text>
-              </Pressable>
+              </Touchable>
             )}
-            <Pressable style={styles.btnGhost} onPress={onCancel} accessibilityRole="button" accessibilityLabel={`Cancel download of ${spec.name}`}>
+            <Touchable style={styles.btnGhost} onPress={onCancel} accessibilityRole="button" accessibilityLabel={`Cancel download of ${spec.name}`}>
               <Text style={styles.btnGhostText}>Cancel</Text>
-            </Pressable>
+            </Touchable>
           </View>
         </>
       ) : (
@@ -264,18 +263,18 @@ const ModelRow = memo(
           {status.installed ? (
             <>
               {!isActive ? (
-                <Pressable style={styles.btn} onPress={onUse} accessibilityRole="button" accessibilityLabel={`Use ${spec.name}`}>
+                <Touchable style={styles.btn} onPress={onUse} accessibilityRole="button" accessibilityLabel={`Use ${spec.name}`}>
                   <Text style={styles.btnText}>Use</Text>
-                </Pressable>
+                </Touchable>
               ) : null}
-              <Pressable style={styles.btnGhost} onPress={onDelete} accessibilityRole="button" accessibilityLabel={`Delete ${spec.name}`}>
+              <Touchable style={styles.btnGhost} onPress={onDelete} accessibilityRole="button" accessibilityLabel={`Delete ${spec.name}`}>
                 <Text style={styles.btnDanger}>Delete</Text>
-              </Pressable>
+              </Touchable>
             </>
           ) : (
-            <Pressable style={styles.btn} onPress={onDownload} accessibilityRole="button" accessibilityLabel={`Download ${spec.name}`}>
+            <Touchable style={styles.btn} onPress={onDownload} accessibilityRole="button" accessibilityLabel={`Download ${spec.name}`}>
               <Text style={styles.btnText}>Download</Text>
-            </Pressable>
+            </Touchable>
           )}
         </View>
       )}
@@ -314,19 +313,19 @@ function AddCustomModel() {
 
   if (!open) {
     return (
-      <Pressable style={styles.advancedRow} onPress={() => setOpen(true)} hitSlop={8}>
+      <Touchable style={styles.advancedRow} onPress={() => setOpen(true)} hitSlop={8}>
         <Text style={styles.advancedToggle}>Advanced: add your own model</Text>
         <Ionicons name="chevron-forward" size={15} color={colors.textFaint} />
-      </Pressable>
+      </Touchable>
     );
   }
 
   return (
     <View style={styles.card}>
-      <Pressable style={styles.advancedRow} onPress={() => setOpen(false)} hitSlop={8}>
+      <Touchable style={styles.advancedRow} onPress={() => setOpen(false)} hitSlop={8}>
         <Text style={styles.cardTitle}>Add custom GGUF</Text>
         <Ionicons name="chevron-down" size={16} color={colors.text} />
-      </Pressable>
+      </Touchable>
       <Text style={styles.cardDesc}>
         Paste direct .gguf links from Hugging Face (use the “resolve/main” download URL). Add a
         mmproj link to enable vision.
@@ -357,9 +356,9 @@ function AddCustomModel() {
         autoCorrect={false}
       />
       <View style={styles.actions}>
-        <Pressable style={[styles.btn, !modelUrl.trim() && styles.btnDisabled]} onPress={add}>
+        <Touchable style={[styles.btn, !modelUrl.trim() && styles.btnDisabled]} onPress={add}>
           <Text style={styles.btnText}>Add</Text>
-        </Pressable>
+        </Touchable>
       </View>
     </View>
   );

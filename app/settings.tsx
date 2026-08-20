@@ -3,11 +3,11 @@
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useEffect, useSyncExternalStore } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as Settings from '@/src/settings/store';
-import { useTheme, useThemedStyles, type Appearance, type Colors } from '@/src/theme';
+import { Touchable, useTheme, useThemedStyles, type Appearance, type Colors } from '@/src/theme';
 
 const APPEARANCES: { label: string; value: Appearance; hint: string }[] = [
   { label: 'Light', value: 'light', hint: 'always' },
@@ -41,15 +41,15 @@ export default function SettingsScreen() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable style={styles.backRow} onPress={() => router.back()} hitSlop={12}>
+        <Touchable style={styles.backRow} onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="chevron-back" size={18} color={colors.primary} />
           <Text style={styles.back}>Chat</Text>
-        </Pressable>
+        </Touchable>
         <Text style={styles.title}>Settings</Text>
       </View>
 
       <ScrollView contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 24 }]}>
-        <Pressable
+        <Touchable
           style={styles.linkRow}
           onPress={() => router.push('/voice-settings')}
           accessibilityRole="button"
@@ -57,12 +57,12 @@ export default function SettingsScreen() {
           <Ionicons name="volume-high-outline" size={20} color={colors.accent} />
           <Text style={styles.linkText}>Voice & speech</Text>
           <Ionicons name="chevron-forward" size={16} color={colors.textFaint} />
-        </Pressable>
+        </Touchable>
 
         <Text style={styles.sectionTitle}>Appearance</Text>
         <View style={styles.chipRow}>
           {APPEARANCES.map((a) => (
-            <Pressable
+            <Touchable
               key={a.value}
               style={[styles.chip, s.appearance === a.value && styles.chipOn]}
               onPress={() => Settings.set({ appearance: a.value })}
@@ -73,14 +73,14 @@ export default function SettingsScreen() {
                 {a.label}
               </Text>
               <Text style={styles.chipHint}>{a.hint}</Text>
-            </Pressable>
+            </Touchable>
           ))}
         </View>
 
         <Text style={styles.sectionTitle}>Reply style</Text>
         <View style={styles.chipRow}>
           {TEMPS.map((t) => (
-            <Pressable
+            <Touchable
               key={t.label}
               style={[styles.chip, s.temperature === t.value && styles.chipOn]}
               onPress={() => Settings.set({ temperature: t.value })}
@@ -91,14 +91,14 @@ export default function SettingsScreen() {
                 {t.label}
               </Text>
               <Text style={styles.chipHint}>{t.hint}</Text>
-            </Pressable>
+            </Touchable>
           ))}
         </View>
 
         <Text style={styles.sectionTitle}>Reply length</Text>
         <View style={styles.chipRow}>
           {LENGTHS.map((l) => (
-            <Pressable
+            <Touchable
               key={l.label}
               style={[styles.chip, s.maxTokens === l.value && styles.chipOn]}
               onPress={() => Settings.set({ maxTokens: l.value })}
@@ -108,7 +108,7 @@ export default function SettingsScreen() {
               <Text style={[styles.chipText, s.maxTokens === l.value && styles.chipTextOn]}>
                 {l.label}
               </Text>
-            </Pressable>
+            </Touchable>
           ))}
         </View>
 
@@ -130,8 +130,10 @@ export default function SettingsScreen() {
         <Text style={styles.sectionTitle}>Developer</Text>
         <Text style={styles.hint}>
           For debugging tool use. The trace stays in memory and is never written to disk.
+          Trajectory recording is the exception — it writes to a file on this phone, and it
+          says so.
         </Text>
-        <Pressable
+        <Touchable
           style={styles.toggleRow}
           onPress={() => Settings.set({ showPlanSteps: !s.showPlanSteps })}
           accessibilityRole="switch"
@@ -147,8 +149,8 @@ export default function SettingsScreen() {
             trackColor={{ true: colors.primary, false: colors.border }}
             thumbColor={colors.bg}
           />
-        </Pressable>
-        <Pressable
+        </Touchable>
+        <Touchable
           style={styles.toggleRow}
           onPress={() => Settings.set({ devTrace: !s.devTrace })}
           accessibilityRole="switch"
@@ -164,8 +166,27 @@ export default function SettingsScreen() {
             trackColor={{ true: colors.primary, false: colors.border }}
             thumbColor={colors.bg}
           />
-        </Pressable>
-        <Pressable
+        </Touchable>
+        <Touchable
+          style={styles.toggleRow}
+          onPress={() => Settings.set({ evalRecord: !s.evalRecord })}
+          accessibilityRole="switch"
+          accessibilityState={{ checked: s.evalRecord }}
+          accessibilityLabel="Record trajectories for evaluation">
+          <View style={styles.toggleLabels}>
+            <Text style={styles.toggleTitle}>Record trajectories</Text>
+            <Text style={styles.toggleHint}>
+              Writes each turn — your words included — to a file on this phone
+            </Text>
+          </View>
+          <Switch
+            value={s.evalRecord}
+            onValueChange={(v) => Settings.set({ evalRecord: v })}
+            trackColor={{ true: colors.primary, false: colors.border }}
+            thumbColor={colors.bg}
+          />
+        </Touchable>
+        <Touchable
           style={styles.linkRow}
           onPress={() => router.push('/agent-trace')}
           accessibilityRole="button"
@@ -173,7 +194,7 @@ export default function SettingsScreen() {
           <Ionicons name="pulse-outline" size={20} color={colors.icon} />
           <Text style={styles.linkText}>Agent trace</Text>
           <Ionicons name="chevron-forward" size={16} color={colors.textFaint} />
-        </Pressable>
+        </Touchable>
 
         <Text style={styles.privacy}>
           Whisper runs entirely on this phone. Chats, voice, and settings stay on-device. The

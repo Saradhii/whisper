@@ -16,7 +16,6 @@ import {
   FlatList,
   Modal,
   PanResponder,
-  Pressable,
   StyleSheet,
   Text,
   useWindowDimensions,
@@ -32,7 +31,7 @@ import Animated, {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as ChatStore from '@/src/chat/store';
-import { useTheme, useThemedStyles, type Colors } from '@/src/theme';
+import { Touchable, useTheme, useThemedStyles, type Colors } from '@/src/theme';
 
 const OPEN_MS = 220;
 const CLOSE_MS = 180;
@@ -185,7 +184,7 @@ export default function DrawerMenu({ open, onClose }: { open: boolean; onClose: 
       onRequestClose={onClose}>
       <View style={styles.fill}>
         <Animated.View style={[styles.backdrop, backdropStyle]}>
-          <Pressable
+          <Touchable feedback="none"
             style={styles.fill}
             onPress={onClose}
             accessibilityRole="button"
@@ -198,14 +197,14 @@ export default function DrawerMenu({ open, onClose }: { open: boolean; onClose: 
           {/* The responder lives on a plain View: touch-handler props are not
               reliably forwarded through Reanimated's animated wrapper. */}
           <View style={styles.fill} {...pan.panHandlers}>
-            <Pressable
+            <Touchable
               style={styles.newRow}
               onPress={() => void newChat()}
               accessibilityRole="button"
               accessibilityLabel="Start a new chat">
               <Ionicons name="add-circle-outline" size={20} color={colors.primary} />
               <Text style={styles.newText}>New chat</Text>
-            </Pressable>
+            </Touchable>
 
             <FlatList
               data={conversations}
@@ -220,7 +219,7 @@ export default function DrawerMenu({ open, onClose }: { open: boolean; onClose: 
                 </View>
               }
               renderItem={({ item }) => (
-                <Pressable
+                <Touchable
                   style={[styles.row, item.id === currentId && styles.rowActive]}
                   onPress={() => void openChat(item.id)}
                   accessibilityRole="button"
@@ -234,19 +233,19 @@ export default function DrawerMenu({ open, onClose }: { open: boolean; onClose: 
                       {item.messageCount === 1 ? '' : 's'}
                     </Text>
                   </View>
-                  <Pressable
+                  <Touchable
                     onPress={() => confirmDelete(item.id, item.title)}
                     hitSlop={10}
                     accessibilityRole="button"
                     accessibilityLabel={`Delete chat: ${item.title}`}>
                     <Ionicons name="trash-outline" size={18} color={colors.icon} />
-                  </Pressable>
-                </Pressable>
+                  </Touchable>
+                </Touchable>
               )}
             />
 
             <View style={[styles.footer, { paddingBottom: insets.bottom + 10 }]}>
-              <Pressable
+              <Touchable
                 style={styles.footerRow}
                 onPress={() => goto('/settings')}
                 accessibilityRole="button"
@@ -254,8 +253,8 @@ export default function DrawerMenu({ open, onClose }: { open: boolean; onClose: 
                 <Ionicons name="settings-outline" size={20} color={colors.icon} />
                 <Text style={styles.footerText}>Settings</Text>
                 <Ionicons name="chevron-forward" size={16} color={colors.textFaint} />
-              </Pressable>
-              <Pressable
+              </Touchable>
+              <Touchable
                 style={styles.footerRow}
                 onPress={() => goto('/models')}
                 accessibilityRole="button"
@@ -263,7 +262,7 @@ export default function DrawerMenu({ open, onClose }: { open: boolean; onClose: 
                 <Ionicons name="cube-outline" size={20} color={colors.icon} />
                 <Text style={styles.footerText}>Models</Text>
                 <Ionicons name="chevron-forward" size={16} color={colors.textFaint} />
-              </Pressable>
+              </Touchable>
             </View>
           </View>
         </Animated.View>

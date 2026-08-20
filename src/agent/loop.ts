@@ -14,6 +14,7 @@
 // when. Pure orchestration (engine + tools injected) so it unit-tests in Node.
 import type { AgentMessage, ChatMessage, Engine } from '@/src/engines/types';
 
+import * as Recorder from './eval/recorder';
 import { buildToolGrammar, parseDecision } from './grammar';
 import { answerNote, planNote, systemPrompt } from './prompt';
 import * as Trace from './trace';
@@ -113,6 +114,11 @@ export async function runAgent(
     ...history,
   ];
 
+  // Corpus capture for the eval harness (eval/recorder.ts). Off by default and
+  // a no-op until the user turns it on; the loop never branches on it, so the
+  // recorded turn is the turn that actually ran.
+  Recorder.startTurn(lastRequest);
+
   // Turn state. `ran` counts tools that returned something; `acted` narrows
   // that to the ones that CHANGED something. Both feed the answer note, which
   // is where honesty about the turn is enforced.
@@ -134,13 +140,22 @@ export async function runAgent(
   /** One grammar-constrained planning turn. */
   const plan = async (g: string) => {
     const started = Date.now();
-    const res = await engine.generate([...messages, planNote(now, called, lastRequest)], () => {}, {
+    const prompt = [...messages, planNote(now, called, lastRequest)];
+    const res = await engine.generate(prompt, () => {}, {
       grammar: g,
       disableThinking: true,
       maxTokens: PLAN_MAX_TOKENS,
       temperature: PLAN_TEMPERATURE,
     });
-    return { res, ms: Date.now() - started };
+    const ms = Date.now() - started;
+    Recorder.generation(
+      'plan',
+      prompt,
+      { grammar: g, temperature: PLAN_TEMPERATURE, maxTokens: PLAN_MAX_TOKENS },
+      res.text,
+      ms,
+    );
+    return { res, ms };
   };
 
   /** Record a decision and what came back, in the shape the examples teach:
@@ -201,12 +216,18 @@ export async function runAgent(
 
     const label = tool.label(args);
     let result: string;
+    // Recorder bookkeeping only. `toolMs` stays 0 for a denial: that time is
+    // the user reading a confirmation card, and folding it into the tool budget
+    // would make the Phase 2 latency numbers meaningless.
+    let status: 'done' | 'denied' | 'error' = 'done';
+    let toolMs = 0;
     if (tool.requiresConfirmation && !(await confirm(label, name))) {
       onEvent({ type: 'tool', name, label, status: 'denied' });
       Trace.add('tool', `${name} denied by user`, { detail: label });
       // Settled, not failed: the retry path must never reopen a refusal.
       spent.set(sig, 'settled');
       denials.push(label);
+      status = 'denied';
       result = 'The user REFUSED this action, so it did NOT happen. Do not retry it and do not claim you did it; ask what they want instead.';
     } else {
       onEvent({ type: 'tool', name, label, status: 'running' });
@@ -228,11 +249,14 @@ export async function runAgent(
         // different signature and therefore allowed anyway.
         spent.set(sig, e instanceof InvalidArguments ? 'settled' : 'failed');
         failures.push(why);
+        status = 'error';
         onEvent({ type: 'tool', name, label, status: 'error' });
         Trace.add('error', `${name} threw`, { detail: result, ms: Date.now() - started });
       }
+      toolMs = Date.now() - started;
     }
     outcomes.set(sig, result);
+    Recorder.toolCall(name, args, status, result, toolMs);
     record(raw, name, result);
     return 'acted';
   };
@@ -264,7 +288,10 @@ export async function runAgent(
 
   // --- plan: constrained decisions, no streaming (the output is control JSON) -
   for (let i = 0; i < MAX_STEPS; i++) {
-    if (aborted()) return;
+    if (aborted()) {
+      Recorder.abandon(); // a cancelled turn never answered; it is not a trajectory
+      return;
+    }
     if (!(await step(i, grammar))) break;
   }
 
@@ -285,7 +312,10 @@ export async function runAgent(
   // gone. If narrated-instead-of-acted ever comes back, this is where it lived.
 
   // --- answer: unconstrained, streamed to the user ---------------------------
-  if (aborted()) return;
+  if (aborted()) {
+    Recorder.abandon();
+    return;
+  }
   messages.push(answerNote({ ran, acted, failed: failures, denied: denials }));
   const started = Date.now();
   let streamed = '';
@@ -296,6 +326,13 @@ export async function runAgent(
       onEvent({ type: 'token', token });
     },
     { disableThinking: true, maxTokens: ANSWER_MAX_TOKENS },
+  );
+  Recorder.generation(
+    'answer',
+    messages,
+    { maxTokens: ANSWER_MAX_TOKENS },
+    res.text,
+    Date.now() - started,
   );
 
   // The token callback is best-effort — llama.rn only forwards a partial when
@@ -313,14 +350,13 @@ export async function runAgent(
   // the user with a bare chip.
   if (!streamed.trim() && !res.text.trim()) {
     Trace.add('warn', 'final answer was empty', { ms: Date.now() - started });
-    onEvent({
-      type: 'token',
-      token: results.length
-        ? results.join(' ')
-        : failures.length
-          ? `Sorry — that didn't work: ${failures[0]}`
-          : 'Sorry — I could not put a reply together. Please try again.',
-    });
+    const salvaged = results.length
+      ? results.join(' ')
+      : failures.length
+        ? `Sorry — that didn't work: ${failures[0]}`
+        : 'Sorry — I could not put a reply together. Please try again.';
+    onEvent({ type: 'token', token: salvaged });
+    Recorder.finishTurn(salvaged);
     return;
   }
 
@@ -328,4 +364,5 @@ export async function runAgent(
     detail: `${(streamed || res.text).trim().length} chars`,
     ms: Date.now() - started,
   });
+  Recorder.finishTurn((streamed || res.text).trim());
 }

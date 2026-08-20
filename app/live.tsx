@@ -5,14 +5,15 @@ import { Ionicons } from '@expo/vector-icons';
 import { requestRecordingPermissionsAsync } from 'expo-audio';
 import { useKeepAwake } from 'expo-keep-awake';
 import { router } from 'expo-router';
+import { useVoiceAmplitude } from 'expo-thinking-orbs';
 import { useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { engineFor, type ChatMessage } from '@/src/engines';
 import * as ModelManager from '@/src/models/ModelManager';
-import { useTheme, useThemedStyles, type Colors } from '@/src/theme';
-import LiveOrb, { type OrbPhase } from '@/src/voice/LiveOrb';
+import { Touchable, useTheme, useThemedStyles, type Colors } from '@/src/theme';
+import LiveOrb, { orbLevel, type OrbPhase } from '@/src/voice/LiveOrb';
 import * as SpeechService from '@/src/voice/SpeechService';
 import * as Tts from '@/src/voice/tts/TtsService';
 import * as TtsSettings from '@/src/voice/tts/TtsStore';
@@ -46,7 +47,11 @@ export default function Live() {
   // A hands-free conversation must not be ended by the screen dozing off.
   useKeepAwake();
   const [phase, setPhase] = useState<OrbPhase>('connecting');
-  const [level, setLevel] = useState(0);
+  // Mic level lives in a SharedValue, not React state: the VAD polls amplitude
+  // every 120 ms purely to drive the orb, and routing that through setState
+  // re-rendered this whole screen several times a second to animate one shape.
+  // The orb reads this on the UI thread; writing it never re-renders.
+  const mic = useVoiceAmplitude();
   const [caption, setCaption] = useState('');
   const [error, setError] = useState<string | null>(null);
 
@@ -89,10 +94,12 @@ export default function Live() {
           Tts.stop();
           setPhase('listening');
           setCaption('');
-          const { promise, handle } = listenOnce((amp) => aliveRef.current && setLevel(amp));
+          const { promise, handle } = listenOnce((amp) => {
+            if (aliveRef.current) mic.set(orbLevel(amp));
+          });
           vadRef.current = handle;
           const pcm = await promise;
-          setLevel(0);
+          mic.set(0);
           if (!aliveRef.current) return;
           if (!pcm) continue; // no speech — keep listening
 
@@ -205,7 +212,7 @@ export default function Live() {
       </View>
 
       <View style={styles.center}>
-        <LiveOrb phase={phase} level={level} />
+        <LiveOrb phase={phase} level={mic.level} />
         <Text style={styles.caption} numberOfLines={4}>
           {error ?? (caption || CAPTIONS[phase])}
         </Text>
@@ -214,24 +221,24 @@ export default function Live() {
       <View style={styles.controls}>
         {phase === 'error' ? (
           <View style={styles.controlCol}>
-            <Pressable
+            <Touchable
               style={styles.retryBtn}
               onPress={retry}
               accessibilityRole="button"
               accessibilityLabel="Retry live conversation">
               <Ionicons name="refresh-outline" size={26} color={colors.onPrimary} />
-            </Pressable>
+            </Touchable>
             <Text style={styles.endLabel}>Retry</Text>
           </View>
         ) : null}
         <View style={styles.controlCol}>
-          <Pressable
+          <Touchable
             style={styles.endBtn}
             onPress={exit}
             accessibilityRole="button"
             accessibilityLabel="End live conversation">
             <Ionicons name="close-outline" size={28} color={colors.onPrimary} />
-          </Pressable>
+          </Touchable>
           <Text style={styles.endLabel}>End</Text>
         </View>
       </View>

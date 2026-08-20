@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
+    "eval": "vitest run src/agent/eval/corpus.test.ts --reporter=verbose",
     "check": "npm run typecheck && npm run lint && npm run test",
     "build:apk": "npm run check && expo prebuild --platform android --clean --no-install && cd android && ./gradlew assembleRelease --console=plain -q",
     "postinstall": "patch-package"
@@ -45,6 +46,7 @@
     "expo-router": "~6.0.23",
     "expo-splash-screen": "~31.0.13",
     "expo-status-bar": "~3.0.9",
+    "expo-thinking-orbs": "^0.2.1",
     "llama.rn": "^0.12.5",
     "react": "19.1.0",
     "react-native": "0.81.5",

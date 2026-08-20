@@ -19,6 +19,12 @@ const SettingsSchema = z.object({
   /** Show each planning decision inline in the chat as a collapsible row.
    *  Independent of devTrace: this one is about the conversation, not the log. */
   showPlanSteps: z.boolean().catch(false),
+  /** Write a replayable trajectory per agent turn to the eval corpus. Kept
+   *  separate from devTrace deliberately: the trace is an in-memory viewer that
+   *  dies with the process, while this writes the user's raw requests and every
+   *  prompt around them to a FILE. Different lifetime, different risk, so it
+   *  gets its own decision — and, like the trace, it is off by default. */
+  evalRecord: z.boolean().catch(false),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -30,6 +36,7 @@ const DEFAULTS: Settings = {
   appearance: 'system',
   devTrace: false,
   showPlanSteps: false,
+  evalRecord: false,
 };
 const PATH = FileSystem.documentDirectory + 'settings.json';
 

@@ -20,7 +20,7 @@
     },
     "android": {
       "package": "com.whisper.app",
-      "versionCode": 3,
+      "versionCode": 4,
       "edgeToEdgeEnabled": true,
       "permissions": [
         "android.permission.RECORD_AUDIO",

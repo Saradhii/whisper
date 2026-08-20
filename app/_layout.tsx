@@ -5,15 +5,18 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
 import { Component, useEffect, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { KeyboardProvider } from 'react-native-keyboard-controller';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import * as Recorder from '@/src/agent/eval/recorder';
+import * as RecorderStore from '@/src/agent/eval/recorderStore';
 import * as Trace from '@/src/agent/trace';
 import { installEngineLifecycle } from '@/src/engines/lifecycle';
+import * as ModelManager from '@/src/models/ModelManager';
 import * as Settings from '@/src/settings/store';
 import AnimatedSplash from '@/src/splash/AnimatedSplash';
-import { ThemeProvider, useTheme, useThemedStyles, type Colors } from '@/src/theme';
+import { ThemeProvider, Touchable, useTheme, useThemedStyles, type Colors } from '@/src/theme';
 
 // Hold the native splash (solid white, cold-start only by OS design) until
 // fonts are ready, then hand off to the animated overlay with the same first
@@ -52,9 +55,9 @@ class ErrorBoundary extends Component<
         <View style={styles.root}>
           <Text style={styles.title}>Something went wrong</Text>
           <Text style={styles.detail}>{this.state.error.message}</Text>
-          <Pressable style={styles.btn} onPress={() => this.setState({ error: null })}>
+          <Touchable style={styles.btn} onPress={() => this.setState({ error: null })}>
             <Text style={styles.btnText}>Try again</Text>
-          </Pressable>
+          </Touchable>
         </View>
       );
     }
@@ -115,6 +118,24 @@ export default function RootLayout() {
   useEffect(() => {
     Trace.setEnabled(devTrace);
   }, [devTrace]);
+
+  // Trajectory recording, same reasoning and same place — but the file binding
+  // is only attached once the user has opted in, so a phone that never turns
+  // this on never creates the directory, let alone a file.
+  const evalRecord = Settings.get().evalRecord;
+  useEffect(() => {
+    Recorder.setEnabled(evalRecord);
+    if (evalRecord) void RecorderStore.init();
+  }, [evalRecord]);
+
+  // Which model produced the completions has to be stamped on the recording or
+  // a mixed-model corpus scores as one model. Injected rather than imported by
+  // the recorder, which keeps that module free of Expo and testable in Node.
+  useSyncExternalStore(ModelManager.subscribe, ModelManager.getVersion);
+  const activeModelId = ModelManager.getActive()?.id ?? '';
+  useEffect(() => {
+    Recorder.setModelId(activeModelId);
+  }, [activeModelId]);
 
   return (
     <SafeAreaProvider>

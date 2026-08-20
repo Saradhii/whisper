@@ -27,3 +27,7 @@ npm-debug.*
 
 # icon design sources
 assets/*-source.*
+
+# env
+.env
+.env.*

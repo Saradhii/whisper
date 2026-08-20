@@ -19,7 +19,6 @@ import {
   Image,
   Linking,
   Platform,
-  Pressable,
   Share,
   StyleSheet,
   Text,
@@ -41,7 +40,7 @@ import DrawerMenu from '@/src/chat/DrawerMenu';
 import TypingIndicator from '@/src/chat/TypingIndicator';
 import Waveform from '@/src/voice/Waveform';
 import { ensureVerified } from '@/src/models/verifyModel';
-import { useTheme, useThemedStyles, type Colors } from '@/src/theme';
+import { Touchable, useTheme, useThemedStyles, type Colors } from '@/src/theme';
 import * as Tts from '@/src/voice/tts/TtsService';
 import * as TtsStore from '@/src/voice/tts/TtsStore';
 import { useVoiceInput } from '@/src/voice/useVoiceInput';
@@ -505,14 +504,14 @@ export default function Chat() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable
+        <Touchable
           style={styles.menuBtn}
           onPress={() => setDrawerOpen(true)}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="Menu: chats, settings and models">
           <Ionicons name="menu-outline" size={26} color={colors.text} />
-        </Pressable>
+        </Touchable>
         <View style={styles.flex}>
           <Text style={styles.title}>Whisper</Text>
           <View style={styles.statusRow}>
@@ -529,7 +528,7 @@ export default function Chat() {
           </View>
         </View>
         {active && ready ? (
-          <Pressable
+          <Touchable
             style={styles.headerIcon}
             onPress={() => router.push('/live')}
             hitSlop={8}
@@ -539,7 +538,7 @@ export default function Chat() {
                 separates "start a hands-free conversation" from "dictate into
                 the box", since both live on this screen. */}
             <Ionicons name="mic-circle-outline" size={26} color={colors.accent} />
-          </Pressable>
+          </Touchable>
         ) : null}
       </View>
 
@@ -571,18 +570,18 @@ export default function Chat() {
               </Text>
             </View>
           </View>
-          <Pressable style={styles.cta} onPress={() => router.push('/models')}>
+          <Touchable style={styles.cta} onPress={() => router.push('/models')}>
             <Text style={styles.ctaText}>Choose a model</Text>
-          </Pressable>
+          </Touchable>
         </View>
       ) : loadError ? (
         <View style={styles.center}>
           <Text style={styles.error}>
             {humanizeLoadError(loadError, active, Device.totalMemory)}
           </Text>
-          <Pressable style={styles.cta} onPress={() => router.push('/models')}>
+          <Touchable style={styles.cta} onPress={() => router.push('/models')}>
             <Text style={styles.ctaText}>Choose another model</Text>
-          </Pressable>
+          </Touchable>
         </View>
       ) : !ready ? (
         <View style={styles.center}>
@@ -627,11 +626,11 @@ export default function Chat() {
             ) : item.error ? (
               <ErrorBubble content={item.content} />
             ) : item.role === 'user' ? (
-              <Pressable onLongPress={() => bubbleActions(item)} delayLongPress={300}>
+              <Touchable feedback="none" onLongPress={() => bubbleActions(item)} delayLongPress={300}>
                 <UserBubble content={item.content} image={item.image} />
-              </Pressable>
+              </Touchable>
             ) : (
-              <Pressable onLongPress={() => bubbleActions(item)} delayLongPress={300}>
+              <Touchable feedback="none" onLongPress={() => bubbleActions(item)} delayLongPress={300}>
                 <AssistantBubble
                   content={item.content}
                   streaming={item.id === streamingId}
@@ -639,7 +638,7 @@ export default function Chat() {
                   voiceSid={tts.voiceSid}
                   onRegenerate={item.id === lastAssistantId && !busy ? regenerate : undefined}
                 />
-              </Pressable>
+              </Touchable>
             )
           }
           ListEmptyComponent={
@@ -651,7 +650,7 @@ export default function Chat() {
                 </Text>
                 <View style={styles.suggestionWrap}>
                   {(active?.tools ? SUGGESTIONS_TOOLS : SUGGESTIONS_PLAIN).map((s) => (
-                    <Pressable
+                    <Touchable
                       key={s}
                       style={[styles.suggestion, !ready && styles.suggestionDisabled]}
                       disabled={!ready || busy}
@@ -659,7 +658,7 @@ export default function Chat() {
                       accessibilityRole="button"
                       accessibilityLabel={`Send: ${s}`}>
                       <Text style={styles.suggestionText}>{s}</Text>
-                    </Pressable>
+                    </Touchable>
                   ))}
                 </View>
               </View>
@@ -670,22 +669,22 @@ export default function Chat() {
       )}
 
       {showJump ? (
-        <Pressable
+        <Touchable
           style={[styles.jumpBtn, { bottom: insets.bottom + 96 }]}
           onPress={jumpToEnd}
           accessibilityRole="button"
           accessibilityLabel="Scroll to latest message">
           <Ionicons name="chevron-down" size={20} color={colors.text} />
-        </Pressable>
+        </Touchable>
       ) : null}
 
       <KeyboardAvoidingView behavior="padding">
         {image ? (
           <View style={styles.attachRow}>
             <Image source={{ uri: image }} style={styles.attachThumb} />
-            <Pressable onPress={() => setImage(null)}>
+            <Touchable onPress={() => setImage(null)}>
               <Text style={styles.attachRemove}>Remove</Text>
-            </Pressable>
+            </Touchable>
           </View>
         ) : null}
         {voice.state.status === 'downloading' || voice.state.status === 'error' ? (
@@ -698,13 +697,13 @@ export default function Chat() {
             {voice.state.status === 'error' ? (
               <View style={styles.voiceActions}>
                 {voice.state.canOpenSettings ? (
-                  <Pressable onPress={() => void Linking.openSettings()}>
+                  <Touchable onPress={() => void Linking.openSettings()}>
                     <Text style={styles.voiceLink}>Open Settings</Text>
-                  </Pressable>
+                  </Touchable>
                 ) : null}
-                <Pressable onPress={voice.reset}>
+                <Touchable onPress={voice.reset}>
                   <Text style={styles.attachRemove}>Dismiss</Text>
-                </Pressable>
+                </Touchable>
               </View>
             ) : null}
           </View>
@@ -712,38 +711,38 @@ export default function Chat() {
         {voice.state.status === 'recording' ? (
           // Recording: cancel · live waveform · confirm (stop & transcribe).
           <View style={[styles.inputRow, { paddingBottom: insets.bottom + 8 }]}>
-            <Pressable
+            <Touchable
               style={styles.iconBtn}
               onPress={voice.cancel}
               hitSlop={6}
               accessibilityRole="button"
               accessibilityLabel="Cancel recording">
               <Ionicons name="close-outline" size={22} color={colors.textSecondary} />
-            </Pressable>
+            </Touchable>
             <View style={styles.waveWrap}>
               <Waveform active />
             </View>
-            <Pressable
+            <Touchable
               style={styles.sendBtn}
               onPress={voice.stop}
               accessibilityRole="button"
               accessibilityLabel="Finish recording and transcribe">
               <Ionicons name="checkmark" size={20} color={colors.onPrimary} />
-            </Pressable>
+            </Touchable>
           </View>
         ) : (
           <View style={[styles.inputRow, { paddingBottom: insets.bottom + 8 }]}>
             {active?.vision ? (
-              <Pressable
+              <Touchable
                 style={[styles.iconBtn, (!ready || busy) && styles.sendBtnDisabled]}
                 onPress={pickImage}
                 disabled={!ready || busy}
                 accessibilityRole="button"
                 accessibilityLabel="Attach an image">
                 <Ionicons name="add-outline" size={24} color={colors.text} />
-              </Pressable>
+              </Touchable>
             ) : null}
-            <Pressable
+            <Touchable
               style={[styles.iconBtn, (!ready || busy) && styles.sendBtnDisabled]}
               onPress={voice.start}
               disabled={!ready || busy || voice.state.status === 'transcribing'}
@@ -754,7 +753,7 @@ export default function Chat() {
               ) : (
                 <Ionicons name="mic-outline" size={22} color={colors.text} />
               )}
-            </Pressable>
+            </Touchable>
             <TextInput
               style={styles.input}
               value={input}
@@ -770,13 +769,13 @@ export default function Chat() {
               editable={ready && !busy}
               multiline
             />
-            <Pressable
+            <Touchable
               style={[styles.sendBtn, !ready && styles.sendBtnDisabled]}
               onPress={busy ? stop : send}
               accessibilityRole="button"
               accessibilityLabel={busy ? 'Stop generating' : 'Send message'}>
               <Text style={styles.sendText}>{busy ? 'Stop' : 'Send'}</Text>
-            </Pressable>
+            </Touchable>
           </View>
         )}
       </KeyboardAvoidingView>
@@ -877,20 +876,20 @@ const ConfirmCard = memo(function ConfirmCard({
         <Text style={styles.confirmLabel}>{label}</Text>
       </View>
       <View style={styles.confirmActions}>
-        <Pressable
+        <Touchable
           style={[styles.confirmBtn, styles.confirmDeny]}
           onPress={() => onAnswer(id, false)}
           accessibilityRole="button"
           accessibilityLabel={`Deny: ${label}`}>
           <Text style={styles.confirmDenyText}>Deny</Text>
-        </Pressable>
-        <Pressable
+        </Touchable>
+        <Touchable
           style={[styles.confirmBtn, styles.confirmAllow]}
           onPress={() => onAnswer(id, true)}
           accessibilityRole="button"
           accessibilityLabel={`Allow: ${label}`}>
           <Text style={styles.confirmAllowText}>Allow</Text>
-        </Pressable>
+        </Touchable>
       </View>
     </View>
   );
@@ -922,7 +921,7 @@ const PlanRow = memo(function PlanRow({
         : 'answer directly';
   return (
     <View style={styles.planWrap}>
-      <Pressable
+      <Touchable
         style={styles.planRow}
         onPress={() => setOpen((v) => !v)}
         hitSlop={6}
@@ -938,7 +937,7 @@ const PlanRow = memo(function PlanRow({
           {forced ? 'Retry · ' : `Step ${step + 1} · `}
           {summary}
         </Text>
-      </Pressable>
+      </Touchable>
       {open ? <Text style={styles.planJson}>{text}</Text> : null}
     </View>
   );
@@ -1034,7 +1033,7 @@ const AssistantBubble = memo(function AssistantBubble({
   return (
     <View style={[styles.bubble, styles.assistant]}>
       {thinking ? (
-        <Pressable
+        <Touchable
           style={styles.thoughtsToggle}
           onPress={() => setShowThoughts((v) => !v)}
           hitSlop={6}
@@ -1049,7 +1048,7 @@ const AssistantBubble = memo(function AssistantBubble({
             />
           ) : null}
           <Text style={styles.thoughtsLabel}>{stillThinking ? 'Thinking…' : 'Thoughts'}</Text>
-        </Pressable>
+        </Touchable>
       ) : null}
       {thinking && (showThoughts || stillThinking) ? (
         <Text style={styles.thoughtsText}>{thinking}</Text>
@@ -1066,22 +1065,22 @@ const AssistantBubble = memo(function AssistantBubble({
       {answer && !streaming && (canSpeak || onRegenerate) ? (
         <View style={styles.bubbleActionsRow}>
           {canSpeak ? (
-            <Pressable
+            <Touchable
               onPress={() => Tts.speak(answer, voiceSid)}
               hitSlop={6}
               accessibilityRole="button"
               accessibilityLabel="Read reply aloud">
               <Ionicons name="volume-medium-outline" size={16} color={colors.textSecondary} />
-            </Pressable>
+            </Touchable>
           ) : null}
           {onRegenerate ? (
-            <Pressable
+            <Touchable
               onPress={onRegenerate}
               hitSlop={6}
               accessibilityRole="button"
               accessibilityLabel="Regenerate reply">
               <Ionicons name="refresh-outline" size={16} color={colors.textSecondary} />
-            </Pressable>
+            </Touchable>
           ) : null}
         </View>
       ) : null}

@@ -8,7 +8,6 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Pressable,
   StyleSheet,
   Switch,
   Text,
@@ -16,7 +15,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { useTheme, useThemedStyles, type Colors } from '@/src/theme';
+import { Touchable, useTheme, useThemedStyles, type Colors } from '@/src/theme';
 import * as Tts from '@/src/voice/tts/TtsService';
 import * as TtsStore from '@/src/voice/tts/TtsStore';
 import { PREVIEW_TEXT, VOICES, type Voice } from '@/src/voice/tts/voices';
@@ -57,10 +56,10 @@ export default function VoiceSettings() {
   return (
     <View style={[styles.root, { paddingTop: insets.top }]}>
       <View style={styles.header}>
-        <Pressable style={styles.backRow} onPress={() => router.back()} hitSlop={12}>
+        <Touchable style={styles.backRow} onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="chevron-back" size={18} color={colors.primary} />
           <Text style={styles.back}>Chat</Text>
-        </Pressable>
+        </Touchable>
         <Text style={styles.title}>Voice</Text>
         <Text style={styles.subtitle}>Spoken replies · on-device · offline</Text>
       </View>
@@ -97,7 +96,7 @@ export default function VoiceSettings() {
           const busy = previewing === item.sid;
           return (
             <View style={[styles.voiceRow, active && styles.voiceRowActive]}>
-              <Pressable
+              <Touchable
                 style={styles.playBtn}
                 onPress={() => preview(item)}
                 disabled={previewing != null}>
@@ -106,7 +105,7 @@ export default function VoiceSettings() {
                 ) : (
                   <Ionicons name="play-outline" size={18} color={colors.accent} />
                 )}
-              </Pressable>
+              </Touchable>
               <View style={styles.flex}>
                 <Text style={styles.voiceName}>{item.name}</Text>
                 <Text style={styles.voiceDesc}>{item.description}</Text>
@@ -114,9 +113,9 @@ export default function VoiceSettings() {
               {active ? (
                 <Text style={styles.activeTag}>SELECTED</Text>
               ) : (
-                <Pressable style={styles.useBtn} onPress={() => TtsStore.setVoice(item.sid)}>
+                <Touchable style={styles.useBtn} onPress={() => TtsStore.setVoice(item.sid)}>
                   <Text style={styles.useText}>Use</Text>
-                </Pressable>
+                </Touchable>
               )}
             </View>
           );

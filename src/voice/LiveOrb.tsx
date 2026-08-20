@@ -1,87 +1,69 @@
-// Animated orb for live voice mode. Concentric glowing rings that react to the
-// current phase: pulse with mic amplitude while listening, breathe while
-// thinking, and pulse gently while speaking. Reanimated only (no emoji).
-import { useEffect } from 'react';
-import { StyleSheet, View } from 'react-native';
-import Animated, {
-  Easing,
-  useAnimatedStyle,
-  useSharedValue,
-  withRepeat,
-  withTiming,
-} from 'react-native-reanimated';
+// The live-mode voice orb. A thin adapter over expo-thinking-orbs' <VoiceOrb>:
+// it owns the app's phase vocabulary and the violet palette rule, so the
+// library is coupled to exactly this one file and swapping it again is a
+// one-file change.
+//
+// Why adapt rather than use <VoiceOrb> directly in live.tsx: the library's
+// state union is LiveKit's AgentState — nine members, and no 'error'. Ours is
+// five and is what the captions are keyed on. Mapping at this boundary keeps
+// the conversation loop written in the app's own words.
+import { VoiceOrb, type VoiceOrbState } from 'expo-thinking-orbs';
+import type { SharedValue } from 'react-native-reanimated';
 
 import { useTheme } from '@/src/theme';
 
 export type OrbPhase = 'connecting' | 'listening' | 'thinking' | 'speaking' | 'error';
 
-export default function LiveOrb({ phase, level }: { phase: OrbPhase; level: number }) {
+// Four of the five are already the same string in both unions; only 'error'
+// needs a decision. 'failed' freezes the shell on its current frame, which is
+// the right read for a dead session — 'disconnected', the other candidate,
+// keeps hunting for a signal it is never going to get.
+const TO_VOICE_STATE: Record<OrbPhase, VoiceOrbState> = {
+  connecting: 'connecting',
+  listening: 'listening',
+  thinking: 'thinking',
+  speaking: 'speaking',
+  error: 'failed',
+};
+
+/**
+ * Map the recorder's amplitude onto the orb's input range.
+ *
+ * `currentAmplitude()` is already `min(1, rms * 4)` — the linearly-scaled RMS.
+ * The library's own PCM path additionally raises that to 0.7 before the orb
+ * sees it, which is what spends the orb's range on speech instead of on the
+ * quiet half of the scale. Feed it raw otherwise and the shell barely moves at
+ * conversational volume. Attack/release smoothing already happens on the UI
+ * thread inside the orb, so nothing is smoothed here.
+ */
+export const orbLevel = (amp: number): number => (amp > 0 ? amp ** 0.7 : 0);
+
+const SIZE = 260;
+
+export default function LiveOrb({
+  phase,
+  level,
+}: {
+  phase: OrbPhase;
+  level: SharedValue<number>;
+}) {
   const { colors } = useTheme();
-  // Auto-animation used for non-listening phases.
-  const auto = useSharedValue(0);
-  // Smoothed amplitude for the listening phase.
-  const amp = useSharedValue(0);
-
-  useEffect(() => {
-    if (phase === 'thinking' || phase === 'connecting') {
-      auto.value = withRepeat(withTiming(1, { duration: 900, easing: Easing.inOut(Easing.quad) }), -1, true);
-    } else if (phase === 'speaking') {
-      auto.value = withRepeat(withTiming(1, { duration: 500, easing: Easing.inOut(Easing.quad) }), -1, true);
-    } else {
-      auto.value = withTiming(0, { duration: 200 });
-    }
-  }, [phase, auto]);
-
-  // 1 while listening (orb tracks mic amplitude), 0 otherwise (auto-animation).
-  const listening = useSharedValue(0);
-
-  useEffect(() => {
-    amp.value = withTiming(level, { duration: 110 });
-  }, [level, amp]);
-
-  useEffect(() => {
-    listening.value = phase === 'listening' ? 1 : 0;
-  }, [phase, listening]);
-
-  const core = useAnimatedStyle(() => {
-    const d = listening.value ? amp.value : auto.value;
-    return { transform: [{ scale: 1 + 0.12 * d }] };
-  });
-  const mid = useAnimatedStyle(() => {
-    const d = listening.value ? amp.value : auto.value;
-    return { transform: [{ scale: 1 + 0.28 * d }], opacity: 0.5 + 0.3 * d };
-  });
-  const outer = useAnimatedStyle(() => {
-    const d = listening.value ? amp.value : auto.value;
-    return { transform: [{ scale: 1 + 0.5 * d }], opacity: 0.25 + 0.25 * d };
-  });
-
-  // A violet ramp, not a hue change: the orb is the voice surface, so every
-  // phase stays in the accent family and only the brightness moves. (Speaking
-  // used to be blue, the one color in the app that belonged to no palette.)
-  const tint =
-    phase === 'error'
-      ? colors.danger
-      : phase === 'listening'
-        ? colors.accent
-        : phase === 'speaking'
-          ? colors.accentSoft
-          : colors.accentDeep;
-
+  const failed = phase === 'error';
   return (
-    <View style={styles.wrap}>
-      <Animated.View style={[styles.ring, styles.outer, outer, { backgroundColor: tint }]} />
-      <Animated.View style={[styles.ring, styles.mid, mid, { backgroundColor: tint }]} />
-      <Animated.View style={[styles.ring, styles.core, core, { backgroundColor: tint }]} />
-    </View>
+    <VoiceOrb
+      state={TO_VOICE_STATE[phase]}
+      inputAmplitude={level}
+      // outputAmplitude is deliberately unset. Kokoro plays through an
+      // expo-audio player created imperatively inside TtsService, which has no
+      // metering wired up, so there is no honest output level to pass. The
+      // speaking behaviour still animates: amplitude only scales how deep the
+      // gesture goes, never whether it happens.
+      size={SIZE}
+      // The orb is the voice surface, so it stays in the violet family and only
+      // the ramp moves — see the palette note in src/theme/palette.ts. Two
+      // endpoints make the ink drift along the gradient on the orb's own clock.
+      color={failed ? colors.danger : colors.accent}
+      colorTo={failed ? colors.danger : colors.accentDeep}
+    />
   );
 }
-
-const SIZE = 160;
-const styles = StyleSheet.create({
-  wrap: { width: SIZE * 2, height: SIZE * 2, alignItems: 'center', justifyContent: 'center' },
-  ring: { position: 'absolute', borderRadius: 999 },
-  core: { width: SIZE, height: SIZE },
-  mid: { width: SIZE * 1.4, height: SIZE * 1.4 },
-  outer: { width: SIZE * 1.9, height: SIZE * 1.9 },
-});
