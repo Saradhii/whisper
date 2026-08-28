@@ -2,9 +2,24 @@
 const { defineConfig } = require('eslint/config');
 const expoConfig = require('eslint-config-expo/flat');
 const tsPlugin = require('@typescript-eslint/eslint-plugin');
+const regexp = require('eslint-plugin-regexp');
 
 module.exports = defineConfig([
   expoConfig,
+  // Regex defects are their own bug class and they fail silently: a bad pattern
+  // is still valid JavaScript, still returns a plausible-looking result, and
+  // still passes a test that only counts the rows it produced. The recommended
+  // set is what caught the quadratic tag-stripper in agent/parse.ts and the
+  // quadratic sentence splitter in voice/tts — both on paths that parse
+  // attacker- or model-supplied text on the JS thread.
+  //
+  // It does NOT catch every regex bug, and it is worth knowing where the line
+  // is: the DuckDuckGo snippet regex had a capture group that could never
+  // match on any input, and this plugin reports nothing on it even with
+  // `flat/all` enabled. Syntactically the pattern is fine; only its result was
+  // wrong. Lint bounds the cost of a regex — a test on a saved fixture is the
+  // only thing that checks what one returns.
+  regexp.configs['flat/recommended'],
   {
     files: ['**/*.ts', '**/*.tsx'],
     plugins: { '@typescript-eslint': tsPlugin },
@@ -13,6 +28,13 @@ module.exports = defineConfig([
       // boundaries). Foreign data must be parsed via zod instead — see
       // src/engines/toolcalls.ts for the pattern.
       '@typescript-eslint/no-explicit-any': 'error',
+      // Not in regexp's recommended set, and it is the rule that caught the
+      // quadratic `<[^>]+>` tag stripper — the one reachable from any page the
+      // model fetches. `no-super-linear-backtracking` (which IS recommended)
+      // only sees patterns that blow up while backtracking a match; this one
+      // sees patterns that blow up by RETRYING from every position, which is
+      // how the tag stripper failed. Both matter when the input is hostile.
+      'regexp/no-super-linear-move': 'error',
     },
   },
   {

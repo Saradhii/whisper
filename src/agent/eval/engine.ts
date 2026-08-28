@@ -194,7 +194,9 @@ export function replayEngine(
  * hypothetical here — it shipped, and it broke every tool call in the app.
  */
 export function legalToolNames(grammar: string): string[] | null {
-  const rule = /^\s*toolname\s*::=(.*)$/m.exec(grammar);
+  // `[ \t]` not `\s`: under /m the anchor already handles line breaks, and a
+  // `\s*` that can eat newlines makes the scan retry from every one of them.
+  const rule = /^[ \t]*toolname[ \t]*::=(.*)$/m.exec(grammar);
   if (!rule?.[1]) return null;
   return rule[1]
     .split('|')

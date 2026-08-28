@@ -16,6 +16,7 @@ import * as MediaLibrary from 'expo-media-library';
 import * as Notifications from 'expo-notifications';
 import { Linking, Platform } from 'react-native';
 
+import { cap, formatSearchResults, htmlToText, parseSearchResults } from './parse';
 import { atTime, mediaMatches, TOOL_DEFS } from './toolDefs';
 import { defineTool, type AnyTool } from './types';
 
@@ -68,28 +69,6 @@ async function defaultCalendar(): Promise<{ id: string; title: string }> {
     writable[0];
   if (!cal) throw new Error('No writable calendar found on this device.');
   return { id: cal.id, title: cal.title };
-}
-
-/** Bound one field of a tool result. Row counts alone don't bound anything when
- *  the rows themselves are unbounded. */
-function cap(text: string, maxChars: number): string {
-  return text.length <= maxChars ? text : `${text.slice(0, maxChars).trimEnd()}…`;
-}
-
-// Strip tags/scripts from HTML and collapse whitespace for model consumption.
-function htmlToText(html: string): string {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&#x27;|&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/\s+/g, ' ')
-    .trim();
 }
 
 // Note the trailing platform filter: advertising a tool the platform can't
@@ -251,27 +230,9 @@ export const TOOLS: AnyTool[] = [
       if (!res.ok) {
         throw new Error(`Search failed (HTTP ${res.status}). Try again in a moment.`);
       }
-      const html = await res.text();
-      const results: string[] = [];
-      const re =
-        /<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?(?:class="result__snippet"[^>]*>([\s\S]*?)<\/a>)?/g;
-      let m: RegExpExecArray | null;
-      while ((m = re.exec(html)) && results.length < 5) {
-        const href = m[1] ?? '';
-        const title = htmlToText(m[2] ?? '');
-        const snippet = m[3] ? htmlToText(m[3]) : '';
-        // DDG wraps result URLs in a redirect; extract the real target.
-        const uddg = /uddg=([^&]+)/.exec(href);
-        const url = uddg?.[1] ? decodeURIComponent(uddg[1]) : href;
-        // Each field is bounded: a single long title, redirect URL or snippet
-        // could otherwise make five "capped" results arbitrarily large.
-        if (title) {
-          results.push(
-            `- ${cap(title, 120)}\n  ${cap(url, 160)}${snippet ? `\n  ${cap(snippet, 240)}` : ''}`,
-          );
-        }
-      }
-      return results.length ? results.join('\n') : 'No results found.';
+      // Parsing lives in ./parse.ts so it can be tested against a saved page;
+      // this executor is now only the fetch and the error message.
+      return formatSearchResults(parseSearchResults(await res.text()));
     },
   }),
   defineTool({

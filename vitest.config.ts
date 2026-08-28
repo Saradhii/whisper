@@ -5,5 +5,7 @@ import { defineConfig } from 'vitest/config';
 // anything importing react-native/expo stays out and is exercised on-device.
 export default defineConfig({
   resolve: { alias: { '@': path.resolve(__dirname) } },
-  test: { include: ['src/**/*.test.ts'] },
+  // *.live.test.ts makes real network calls and is run on demand via
+  // `npm run test:live` — a third party being down must not fail a build.
+  test: { include: ['src/**/*.test.ts'], exclude: ['**/node_modules/**', '**/*.live.test.ts'] },
 });

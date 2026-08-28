@@ -17,6 +17,8 @@ import { createTTS, saveAudioToFile, type TtsEngine } from 'react-native-sherpa-
 
 import { splitThinking } from '@/src/chat/thinking';
 
+import { takeSentences } from './sentences';
+
 let modelId: string | null = null;
 let engine: TtsEngine | null = null;
 let engineLoading: Promise<TtsEngine> | null = null;
@@ -97,7 +99,12 @@ function speakable(text: string): string {
   return splitThinking(text)
     .answer.replace(/```[\s\S]*?```/g, ' code block ')
     .replace(/[*_#`>~|]/g, '')
-    .replace(/\[(.*?)\]\(.*?\)/g, '$1')
+    // Bounded classes rather than `.*?`: lazy dots retry from every '[' in the
+    // reply, which is quadratic on a model that degenerates into brackets, and
+    // they also match ACROSS a ']' into the next link. '[' is excluded from the
+    // link text as well as ']' — without that, a run of '[' still costs a full
+    // scan per opener. Linear, and more correct.
+    .replace(/\[([^\][]*)\]\([^)]*\)/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -167,21 +174,6 @@ function playToEnd(
     timer = setTimeout(cleanup, durationS * 1000 + 400);
     p.play();
   });
-}
-
-// Pull complete sentences out of a running buffer. Anything after the last
-// sentence terminator stays buffered until more text arrives (or end()).
-function takeSentences(buf: string): { done: string[]; rest: string } {
-  const done: string[] = [];
-  let rest = buf;
-  const re = /^[\s\S]*?(?:[.!?\n]+|.{160,}?\s)/;
-  let m = re.exec(rest);
-  while (m) {
-    done.push(m[0]);
-    rest = rest.slice(m[0].length);
-    m = re.exec(rest);
-  }
-  return { done, rest };
 }
 
 export type SpeechStream = {
