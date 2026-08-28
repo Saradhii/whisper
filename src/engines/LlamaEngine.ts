@@ -73,12 +73,20 @@ type GpuProbe = 'untested' | 'probing' | 'ok' | 'failed';
 const GPU_PROBE_PATH = FileSystem.documentDirectory + 'gpu-probe.txt';
 let gpuProbe: GpuProbe | null = null;
 
-// The verdict is stamped with the app version that produced it. Without this
-// the flag latches: one transient failure — an OOM during a first load while
-// another app held the RAM, a driver hiccup — costs that install its GPU
-// offload permanently, with no way back short of clearing app data. A new
-// build ships a new llama.rn and deserves a fresh probe.
-const PROBE_STAMP = String(Constants.expoConfig?.version ?? 'dev');
+// The verdict is stamped with the build that produced it. Without this the flag
+// latches: one transient failure — an OOM during a first load while another app
+// held the RAM, a driver hiccup — costs that install its GPU offload
+// permanently, with no way back short of clearing app data. A new build ships a
+// new llama.rn and deserves a fresh probe.
+//
+// Stamped on versionCode, not version. versionCode is the field that must
+// increment for every uploaded build, so it moves on its own; a marketing
+// version can sit at 1.0.0 across several builds, and a stamp that doesn't move
+// is the same latch this exists to break. version is the fallback for iOS,
+// which has no versionCode.
+const PROBE_STAMP = String(
+  Constants.expoConfig?.android?.versionCode ?? Constants.expoConfig?.version ?? 'dev',
+);
 
 async function readGpuProbe(): Promise<GpuProbe> {
   if (gpuProbe === null) {
