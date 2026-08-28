@@ -38,7 +38,8 @@ import { TOOL_PROMPT_RESERVE } from '@/src/agent/prompt';
 import { TOOLS } from '@/src/agent/tools';
 import * as Trace from '@/src/agent/trace';
 import DrawerMenu from '@/src/chat/DrawerMenu';
-import TypingIndicator from '@/src/chat/TypingIndicator';
+import { ChatOrb, CHIP_ORB, ThinkingBubble } from '@/src/chat/ChatOrb';
+import type { ThinkingPhase } from '@/src/chat/orbPhase';
 import Waveform from '@/src/voice/Waveform';
 import { ensureVerified } from '@/src/models/verifyModel';
 import { Touchable, useTheme, useThemedStyles, type Colors } from '@/src/theme';
@@ -131,7 +132,10 @@ export default function Chat() {
   const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   // True from send until the first visible token (or between a tool finishing
   // and its summary) — drives the typing indicator during CPU prefill.
-  const [thinking, setThinking] = useState(false);
+  // What the turn is waiting on, or null when nothing is pending. Was a
+  // boolean; the orb needs to know WHICH wait this is, and one source of
+  // truth beats a boolean plus a parallel phase that can drift out of step.
+  const [thinking, setThinking] = useState<ThinkingPhase | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const producedRef = useRef(false); // did this turn yield any visible output?
   // Tokens arrive faster than React can paint. Buffer them and flush on an
@@ -247,7 +251,7 @@ export default function Chat() {
     const chunk = pendingRef.current;
     if (!chunk) return;
     pendingRef.current = '';
-    setThinking(false); // first token arrived — hide the typing indicator
+    setThinking(null); // first token arrived — the answer speaks for itself
     producedRef.current = true;
     lastBubbleTextRef.current += chunk;
     const newId = uid(); // minted outside the updater — updaters must be pure
@@ -302,7 +306,10 @@ export default function Chat() {
     producedRef.current = true; // a tool chip is real output for this turn
     // A tool is running (visible chip) → hide typing; once it finishes, the
     // model prefills again for its summary, so show the indicator once more.
-    setThinking(e.status !== 'running');
+    // While a tool runs its chip carries the inline orb, so the footer row
+    // stands down; once it returns, the model prefills its summary of the
+    // result — which is writing, not thinking.
+    setThinking(e.status !== 'running' ? { kind: 'composing' } : null);
     const newId = uid(); // minted outside the updater — updaters must be pure
     setMessages((prev) => applyToolEvent(prev, e, newId));
   };
@@ -320,7 +327,7 @@ export default function Chat() {
       confirmResolvers.current.set(id, resolve);
       breakBubble();
       producedRef.current = true;
-      setThinking(false); // the ball is in the user's court, not the model's
+      setThinking(null); // the ball is in the user's court, not the model's
       setMessages((prev) => [
         ...prev,
         { id, role: 'assistant', content: '', confirm: { name, label: summary } },
@@ -334,7 +341,7 @@ export default function Chat() {
     if (!resolve) return;
     confirmResolvers.current.delete(id);
     setMessages((prev) => resolveConfirm(prev, id, allow));
-    setThinking(allow);
+    setThinking(allow ? { kind: 'thinking' } : null);
     resolve(allow);
   }, []);
 
@@ -380,7 +387,7 @@ export default function Chat() {
     if (!active) return;
     const engine = engineFor(active);
     setBusy(true);
-    setThinking(true); // show the typing indicator immediately during prefill
+    setThinking({ kind: 'thinking' }); // orb up immediately, during prefill
     producedRef.current = false;
     lastBubbleTextRef.current = '';
     abortRef.current = { aborted: false };
@@ -439,7 +446,7 @@ export default function Chat() {
     } finally {
       finishStreaming();
       setBusy(false);
-      setThinking(false);
+      setThinking(null);
     }
   };
 
@@ -629,7 +636,11 @@ export default function Chat() {
             ) : item.plan ? (
               <PlanRow step={item.plan.step} text={item.plan.text} forced={item.plan.forced} />
             ) : item.tool ? (
-              <ToolChip label={item.tool.label} status={item.tool.status} />
+              <ToolChip
+                name={item.tool.name}
+                label={item.tool.label}
+                status={item.tool.status}
+              />
             ) : item.error ? (
               <ErrorBubble content={item.content} />
             ) : item.role === 'user' ? (
@@ -671,7 +682,7 @@ export default function Chat() {
               </View>
             ) : null
           }
-          ListFooterComponent={thinking ? <TypingIndicator /> : null}
+          ListFooterComponent={thinking ? <ThinkingBubble phase={thinking} /> : null}
         />
       )}
 
@@ -823,9 +834,11 @@ const TOOL_ICONS: Record<string, IoniconName> = {
 // question left is "did that work?". The tool's own glyph does the identifying
 // job earlier, on the confirmation card, where there is room for it.
 const ToolChip = memo(function ToolChip({
+  name,
   label,
   status,
 }: {
+  name: string;
   label: string;
   status: ToolStatus;
 }) {
@@ -847,7 +860,10 @@ const ToolChip = memo(function ToolChip({
   return (
     <View style={styles.toolChip}>
       {status === 'running' ? (
-        <ActivityIndicator size="small" color={colors.textSecondary} style={styles.toolSpinner} />
+        // A running tool gets the same orb vocabulary as the footer row —
+        // sweeping for a read, driving for a write — at the settled chip's
+        // icon size, so the row keeps its height when the tool finishes.
+        <ChatOrb phase={{ kind: 'tool', name }} size={CHIP_ORB} />
       ) : (
         <Ionicons name={icon} size={17} color={color} />
       )}
@@ -983,7 +999,11 @@ const ErrorBubble = memo(function ErrorBubble({ content }: { content: string }) 
 // the badge beside it says the same thing while also carrying the canary
 // verification state — so drop the suffix rather than print it twice.
 function modelLabel(model: { name: string; uncensored?: boolean }): string {
-  return model.uncensored ? model.name.replace(/\s*·\s*Uncensored\s*$/i, '') : model.name;
+  // No leading `\s*`: it makes the match retry from every space in the name,
+  // which is quadratic. trimEnd() does that job in linear time.
+  return model.uncensored
+    ? model.name.replace(/·\s*Uncensored\s*$/i, '').trimEnd()
+    : model.name;
 }
 
 // Header badge reflecting the uncensored canary self-test for the active model.
@@ -1175,7 +1195,6 @@ const createStyles = (colors: Colors) =>
       paddingVertical: 9,
     },
     toolChipText: { color: colors.textSecondary, fontSize: 13.5, flexShrink: 1 },
-    toolSpinner: { width: 17, height: 17, transform: [{ scale: 0.75 }] },
 
     // Confirmation card: a real surface with actions, not a chip — it is the
     // one row in the transcript that blocks the turn on the user.
