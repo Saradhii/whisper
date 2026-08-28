@@ -29,6 +29,62 @@ const MAX_STEPS = 4;
  *  day) slip past exact-repeat suppression and would otherwise burn MAX_STEPS. */
 const MAX_CALLS_PER_TOOL = 2;
 
+/**
+ * Tool results are bounded in TOKENS, per turn.
+ *
+ * Every executor used to bound its own output in characters or rows — 4000
+ * chars for web_fetch, 20 calendar rows, 5 search hits with no per-row bound at
+ * all — and none of those units are the one the context window is measured in.
+ * A real page through web_fetch's 4000-char slice measures 1043 Qwen3 tokens,
+ * which is more than the whole turn has to spend.
+ *
+ * The arithmetic, at a planning step, is:
+ *   system(1801) + history(1280) + accumulated + planNote(286) + generate(256)
+ * against nCtx 4096, leaving ~473 tokens for everything the turn accumulates.
+ * Decisions and per-message template overhead take ~140 of that across four
+ * steps, so the results themselves get ~320.
+ *
+ * Overflowing is not a soft failure. `ctx_shift` discards from the FRONT and
+ * llama.rn does not expose `n_keep`, so the first thing evicted is the system
+ * prompt — the tool catalog and the JSON protocol. The grammar keeps the output
+ * well-formed, so the model goes on emitting valid tool calls chosen from a
+ * catalog it can no longer see. Bounding here is what keeps that unreachable.
+ */
+const TURN_RESULT_TOKENS = 320;
+
+/** Never clamp a result below this — a result cut to nothing is worse than a
+ *  long one, because the model then answers from the request alone. */
+const MIN_RESULT_TOKENS = 64;
+
+/**
+ * Chars per token, deliberately LOW. Real Qwen3 measures 3.84 on web text and
+ * ~3.5 on prose, so dividing a token budget by 3 yields a character budget that
+ * under-spends it. Erring the other way would put the clamp above the real
+ * limit and defeat the point.
+ */
+const CHARS_PER_TOKEN = 3;
+
+/** Roughly how many tokens `text` costs. Deliberately an over-estimate. */
+export function approxTokens(text: string): number {
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+/**
+ * Cut `text` to at most `budgetTokens`, on a word boundary, marking the cut.
+ *
+ * The marker is not cosmetic: without it the model presents a truncated page as
+ * the whole of what it read, which is the same class of dishonesty the answer
+ * note exists to prevent.
+ */
+export function clampResult(text: string, budgetTokens: number): string {
+  const budget = Math.max(MIN_RESULT_TOKENS, budgetTokens);
+  const maxChars = budget * CHARS_PER_TOKEN;
+  if (text.length <= maxChars) return text;
+  const cut = text.slice(0, maxChars);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut}… [truncated to fit the context window — this is only the beginning of the result]`;
+}
+
 // Planning is CONTROL FLOW, not prose. Sampling it at the chat temperature
 // (0.7) means the choice between "call set_alarm" and "answer without acting"
 // gets rolled on every turn — which is exactly how a request to set an alarm
@@ -134,6 +190,10 @@ export async function runAgent(
   const outcomes = new Map<string, string>(); // signature -> what the call returned
   let ran = 0;
   let acted = false; // a tool that CHANGED something succeeded
+  // Tokens of tool output already committed to `messages` this turn. Every
+  // result is clamped to what is LEFT, so four small results and one huge one
+  // are both bounded by the same total.
+  let resultTokensSpent = 0;
 
   const aborted = () => !!signal?.aborted;
 
@@ -199,7 +259,15 @@ export async function runAgent(
       // Wording matters more than it looks. "You already made this exact call"
       // reads as confirmation of SUCCESS — after a denial the model turned it
       // into "I already scheduled the reminder." Restate the actual outcome.
-      record(raw, name, `this call was already made and it returned: ${outcomes.get(sig)}. Do not call it again; answer using that.`);
+      // The prior result is already in the prompt above; restating it in full
+      // doubled a single web_fetch to ~2000 tokens. An excerpt keeps the
+      // wording honest about the OUTCOME (a denial must not read as success)
+      // without paying for the content twice.
+      record(
+        raw,
+        name,
+        `this call was already made and it returned: ${clampResult(outcomes.get(sig) ?? '', MIN_RESULT_TOKENS)}. Do not call it again; answer using that.`,
+      );
       return 'exhausted';
     }
     if (prior === 'failed' && used >= 2) {
@@ -238,7 +306,6 @@ export async function runAgent(
         if (tool.mutates) acted = true;
         spent.set(sig, 'settled');
         called.push(name);
-        results.push(result);
         onEvent({ type: 'tool', name, label, status: 'done' });
         Trace.add('tool', `${name} ok`, { detail: result.slice(0, 400), ms: Date.now() - started });
       } catch (e) {
@@ -255,6 +322,12 @@ export async function runAgent(
       }
       toolMs = Date.now() - started;
     }
+    // Single choke point: clamp once, then use the clamped text everywhere it
+    // is remembered (prompt, repeat-suppression, salvage) so no path can
+    // reintroduce the full string later.
+    result = clampResult(result, TURN_RESULT_TOKENS - resultTokensSpent);
+    resultTokensSpent += approxTokens(result);
+    if (status === 'done') results.push(result);
     outcomes.set(sig, result);
     Recorder.toolCall(name, args, status, result, toolMs);
     record(raw, name, result);

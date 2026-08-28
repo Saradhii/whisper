@@ -28,12 +28,21 @@ async function ensure(granted: boolean, what: string): Promise<void> {
 const FETCH_TIMEOUT_MS = 12_000;
 const BROWSER_UA = 'Mozilla/5.0 (Android 15; Mobile)';
 
-async function fetchWithTimeout(url: string): Promise<Response> {
+/** Hard ceiling on a response body we are willing to pull into JS memory.
+ *  Requested via Range so a compliant server never sends more than this. */
+const MAX_BODY_BYTES = 512 * 1024;
+
+async function fetchWithTimeout(url: string, maxBytes?: number): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
     return await fetch(url, {
-      headers: { 'User-Agent': BROWSER_UA },
+      headers: {
+        'User-Agent': BROWSER_UA,
+        // Ask for only the first slice. Servers that honour it stop there;
+        // those that ignore it fall back to the size checks at the call site.
+        ...(maxBytes ? { Range: `bytes=0-${maxBytes - 1}` } : {}),
+      },
       signal: controller.signal,
     });
   } catch (e) {
@@ -59,6 +68,12 @@ async function defaultCalendar(): Promise<{ id: string; title: string }> {
     writable[0];
   if (!cal) throw new Error('No writable calendar found on this device.');
   return { id: cal.id, title: cal.title };
+}
+
+/** Bound one field of a tool result. Row counts alone don't bound anything when
+ *  the rows themselves are unbounded. */
+function cap(text: string, maxChars: number): string {
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars).trimEnd()}…`;
 }
 
 // Strip tags/scripts from HTML and collapse whitespace for model consumption.
@@ -112,7 +127,7 @@ export const TOOLS: AnyTool[] = [
       if (!events.length) return 'No events in that range.';
       return events
         .slice(0, 20)
-        .map((e) => `- ${e.title} — ${new Date(e.startDate as string | Date).toLocaleString()}`)
+        .map((e) => `- ${cap(String(e.title ?? ''), 80)} — ${new Date(e.startDate as string | Date).toLocaleString()}`)
         .join('\n');
     },
   }),
@@ -178,7 +193,7 @@ export const TOOLS: AnyTool[] = [
         .map((c) => {
           const phones = (c.phoneNumbers ?? []).map((p) => p.number).join(', ');
           const emails = (c.emails ?? []).map((e) => e.email).join(', ');
-          return `- ${c.name}${phones ? ` · ${phones}` : ''}${emails ? ` · ${emails}` : ''}`;
+          return `- ${cap(c.name ?? '', 60)}${phones ? ` · ${cap(phones, 80)}` : ''}${emails ? ` · ${cap(emails, 80)}` : ''}`;
         })
         .join('\n');
     },
@@ -248,7 +263,13 @@ export const TOOLS: AnyTool[] = [
         // DDG wraps result URLs in a redirect; extract the real target.
         const uddg = /uddg=([^&]+)/.exec(href);
         const url = uddg?.[1] ? decodeURIComponent(uddg[1]) : href;
-        if (title) results.push(`- ${title}\n  ${url}${snippet ? `\n  ${snippet}` : ''}`);
+        // Each field is bounded: a single long title, redirect URL or snippet
+        // could otherwise make five "capped" results arbitrarily large.
+        if (title) {
+          results.push(
+            `- ${cap(title, 120)}\n  ${cap(url, 160)}${snippet ? `\n  ${cap(snippet, 240)}` : ''}`,
+          );
+        }
       }
       return results.length ? results.join('\n') : 'No results found.';
     },
@@ -257,19 +278,31 @@ export const TOOLS: AnyTool[] = [
     name: 'web_fetch',
     ...TOOL_DEFS.web_fetch,
     execute: async (a) => {
-      const res = await fetchWithTimeout(a.url);
-      if (!res.ok) throw new Error(`The page returned HTTP ${res.status}.`);
+      const res = await fetchWithTimeout(a.url, MAX_BODY_BYTES);
+      // 206 is the success case when the Range header was honoured.
+      if (!res.ok && res.status !== 206) {
+        throw new Error(`The page returned HTTP ${res.status}.`);
+      }
       // Guard before materializing the body: a binary or huge response would
       // otherwise be fully buffered in JS memory just to be thrown away.
       const type = res.headers.get('content-type') ?? '';
       if (type && !/text|html|json|xml/i.test(type)) {
         throw new Error(`Not a readable page (content-type: ${type.split(';')[0]}).`);
       }
-      const length = Number(res.headers.get('content-length') ?? 0);
-      if (length > 5 * 1024 * 1024) {
+      // A chunked or gzip-streamed response carries NO Content-Length, and the
+      // old `Number(null ?? 0) > 5MB` check passed every one of them — so the
+      // guard was absent on exactly the responses most likely to be huge. The
+      // Range request above is the real bound; this only catches a declared
+      // oversize body early, and a missing length is no longer treated as 0.
+      const declared = Number(res.headers.get('content-length'));
+      if (Number.isFinite(declared) && declared > 5 * 1024 * 1024) {
         throw new Error('Page is too large to read (over 5 MB).');
       }
-      const text = htmlToText(await res.text());
+      // Slice the RAW body before htmlToText: those are seven regex passes, and
+      // running them over a multi-megabyte string is both the allocation and the
+      // CPU spike we are trying to avoid.
+      const body = (await res.text()).slice(0, MAX_BODY_BYTES);
+      const text = htmlToText(body);
       return text.slice(0, 4000) || 'Page had no readable text.';
     },
   }),
@@ -343,7 +376,7 @@ export const TOOLS: AnyTool[] = [
       if (!hits.length) return 'No matching files found.';
       return hits
         .slice(0, 15)
-        .map((x) => `- ${x.filename} (${new Date(x.creationTime).toLocaleDateString()})`)
+        .map((x) => `- ${cap(x.filename, 80)} (${new Date(x.creationTime).toLocaleDateString()})`)
         .join('\n');
     },
   }),

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
 import type { AgentMessage, Engine, GenerateResult } from '@/src/engines/types';
-import { runAgent, type AgentEvent } from './loop';
+import { approxTokens, clampResult, runAgent, type AgentEvent } from './loop';
 import { defineTool } from './types';
 
 type Seen = {
@@ -596,5 +596,45 @@ describe('runAgent answering', () => {
     });
     expect(seen).toHaveLength(0); // aborted before the first plan
     expect(events).toHaveLength(0);
+  });
+});
+
+// Tool output is bounded in TOKENS, not characters or rows. The failure this
+// guards against is silent: an oversized result pushes the prompt past n_ctx,
+// ctx_shift discards from the FRONT (llama.rn pins n_keep at 0), and the model
+// keeps emitting grammar-valid tool calls chosen from a catalog it can no
+// longer see. Nothing in the corpus can catch that — the fixture engine has no
+// context window — so it is pinned here instead.
+describe('tool result bounding', () => {
+  it('leaves a result that already fits completely alone', () => {
+    const small = 'Alarm set for 7:00 AM.';
+    expect(clampResult(small, 320)).toBe(small);
+  });
+
+  it('cuts an oversized result down to its budget', () => {
+    // A real page through web_fetch's 4000-char slice measured 1043 Qwen3
+    // tokens — more than a whole turn has to spend.
+    const page = 'lorem ipsum dolor sit amet '.repeat(200);
+    const out = clampResult(page, 320);
+    expect(out.length).toBeLessThan(page.length);
+    expect(approxTokens(out)).toBeLessThan(420);
+  });
+
+  it('marks the cut so the model cannot present a fragment as the whole page', () => {
+    const page = 'x '.repeat(5000);
+    expect(clampResult(page, 320)).toContain('truncated');
+  });
+
+  it('never cuts a result to nothing, however exhausted the budget', () => {
+    // Budget already overspent by earlier calls in the same turn.
+    const out = clampResult('word '.repeat(400), -500);
+    expect(out.length).toBeGreaterThan(100);
+  });
+
+  it('over-estimates tokens rather than under-estimating them', () => {
+    // Real Qwen3 measures 3.84 chars/token on web text; a LOW divisor makes the
+    // budget an under-spend. Erring the other way would defeat the clamp.
+    const text = 'a'.repeat(300);
+    expect(approxTokens(text)).toBeGreaterThanOrEqual(100);
   });
 });

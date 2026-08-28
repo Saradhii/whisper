@@ -2,9 +2,10 @@
 // Exposes a small state machine the chat screen renders (idle / recording /
 // transcribing / downloading-model) plus start/stop actions. All on-device.
 import { requestRecordingPermissionsAsync } from 'expo-audio';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { startRecording, stopRecording } from './recorder';
+import * as Tts from './tts/TtsService';
 import { isModelDownloaded, loadWhisper, transcribe } from './SpeechService';
 
 export type VoiceState =
@@ -41,6 +42,12 @@ export function useVoiceInput(onText: (text: string) => void) {
           ),
         );
       }
+      // Release the audio output session before grabbing the mic. A live
+      // AudioPlayer holding it with interruptionMode 'doNotMix' crashes
+      // AudioRecord on Android 14+ — live mode already defends against this,
+      // but the chat mic did not, and auto-speak leaves a player resident after
+      // every spoken reply. Same failure class as the pcm-stream SIGABRT.
+      Tts.stop();
       await startRecording();
       activeRef.current = true;
       setState({ status: 'recording' });
@@ -48,6 +55,20 @@ export function useVoiceInput(onText: (text: string) => void) {
       activeRef.current = false;
       setState({ status: 'error', message: e instanceof Error ? e.message : String(e) });
     }
+  }, []);
+
+  // The recorder is a module-level singleton with no owner, and its PCM buffer
+  // only drains in stopRecording(). Without this, navigating away mid-recording
+  // leaves the mic hot and the buffer growing at ~32 KB/s indefinitely — and the
+  // next startRecording() early-returns on the still-live session, so the next
+  // consumer would be handed this screen's audio concatenated with its own.
+  useEffect(() => {
+    return () => {
+      if (activeRef.current) {
+        activeRef.current = false;
+        stopRecording();
+      }
+    };
   }, []);
 
   const stop = useCallback(async () => {

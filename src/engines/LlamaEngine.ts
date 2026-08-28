@@ -7,6 +7,7 @@
 // uncensored canary vs. a user message) or a load racing a release corrupts
 // native state. stop() is the one deliberate exception — it must interrupt the
 // completion currently holding the queue.
+import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Platform } from 'react-native';
 import {
@@ -34,6 +35,9 @@ let loadedFiles: ModelFiles | null = null;
 let suspendedSpec: ModelSpec | null = null;
 let suspendedFiles: ModelFiles | null = null;
 let sessionSaved = false;
+// Whether the vision projector has been loaded into the current context.
+// Cleared with the context, so a reload starts text-only again.
+let multimodalReady = false;
 
 // Android CPU decode: pin to the performance cores. Phones are big.LITTLE, so
 // using every core (llama.cpp's default) drags the fast cores down to the pace
@@ -69,17 +73,28 @@ type GpuProbe = 'untested' | 'probing' | 'ok' | 'failed';
 const GPU_PROBE_PATH = FileSystem.documentDirectory + 'gpu-probe.txt';
 let gpuProbe: GpuProbe | null = null;
 
+// The verdict is stamped with the app version that produced it. Without this
+// the flag latches: one transient failure — an OOM during a first load while
+// another app held the RAM, a driver hiccup — costs that install its GPU
+// offload permanently, with no way back short of clearing app data. A new
+// build ships a new llama.rn and deserves a fresh probe.
+const PROBE_STAMP = String(Constants.expoConfig?.version ?? 'dev');
+
 async function readGpuProbe(): Promise<GpuProbe> {
   if (gpuProbe === null) {
     const raw = await FileSystem.readAsStringAsync(GPU_PROBE_PATH).catch(() => null);
-    gpuProbe = raw === 'probing' || raw === 'ok' || raw === 'failed' ? raw : 'untested';
+    const [value, stamp] = (raw ?? '').split('@');
+    gpuProbe =
+      stamp === PROBE_STAMP && (value === 'probing' || value === 'ok' || value === 'failed')
+        ? value
+        : 'untested';
   }
   return gpuProbe;
 }
 
 async function writeGpuProbe(value: GpuProbe): Promise<void> {
   gpuProbe = value;
-  await FileSystem.writeAsStringAsync(GPU_PROBE_PATH, value).catch(() => {});
+  await FileSystem.writeAsStringAsync(GPU_PROBE_PATH, `${value}@${PROBE_STAMP}`).catch(() => {});
 }
 
 /** GPU layers to request for this load. iOS always gets Metal. */
@@ -112,34 +127,84 @@ async function initContext(
       // mlock would pin them as unevictable — never on a phone.
       use_mmap: true,
       use_mlock: false,
+      // Weight repacking off. llama.cpp otherwise allocates a repacked,
+      // ARM-optimised copy of the quantized weights in ANONYMOUS memory,
+      // *alongside* the mmap — measured on device at 1049.96 MiB next to a
+      // 1043.68 MiB mapping, i.e. the weights resident twice. Anonymous memory
+      // is what Android's low-memory killer weighs; the mapping is clean and
+      // evictable. Disabling it cut this process's anonymous RSS by 71%
+      // (1479 -> 429 MiB) with the KV cache and compute buffer byte-identical.
+      //
+      // The cost is prefill only, and it is bounded: repack buys GEMM blocking,
+      // not an instruction set. Q4_K only repacks when NEON+dotprod (or i8mm)
+      // is present, and the non-repacked vec_dot on those same builds uses the
+      // same sdot/smmla instruction — so this never falls back to the emulated
+      // or scalar path. Decode is gemv either way and does not move.
+      no_extra_bufts: true,
       // If a conversation outgrows n_ctx anyway, shift the cache window rather
       // than failing the completion (history is budgeted before we get here).
+      // Note ctx_shift discards from the FRONT (llama.rn pins n_keep at 0), so
+      // an overflow eats the system prompt — tool results are token-bounded in
+      // the agent loop precisely so this stays a backstop and not a code path.
       ctx_shift: true,
-      ...(Platform.OS === 'android'
+      ...(Platform.OS === 'android' && gpuLayers === 0
         ? {
             n_threads: ANDROID_THREADS,
-            // Quantize the K cache to 8-bit on memory-tight Android CPU runs:
-            // ~half the key-cache RAM for negligible quality loss. Skipped when
-            // layers are offloaded — the OpenCL path is safest with defaults.
-            ...(gpuLayers === 0 ? { cache_type_k: 'q8_0' as const } : {}),
+            // Quantize BOTH cache halves to 8-bit on memory-tight Android CPU
+            // runs. Measured split on device for a 28-layer 4096-ctx model:
+            // K (q8_0) 119 MiB + V (f16) 224 MiB, so quantizing V is worth as
+            // much again as quantizing K — 135 MiB on Qwen3-4B.
+            cache_type_k: 'q8_0' as const,
+            cache_type_v: 'q8_0' as const,
+            // A quantized V cache REQUIRES flash attention, and llama.cpp's own
+            // guard only tests the *requested* enum: 'auto' passes the check and
+            // can still resolve to disabled at runtime, which is exactly the
+            // combination the guard exists to prevent. Ask for it explicitly.
+            // Verified on device: flash attention resolves to enabled here.
+            flash_attn_type: 'on' as const,
           }
-        : {}),
-      // Flash attention: fused attention kernel — less memory and faster on long
-      // contexts. 'auto' lets llama.cpp turn it on where the build supports it.
-      flash_attn_type: 'auto',
+        : {
+            ...(Platform.OS === 'android' ? { n_threads: ANDROID_THREADS } : {}),
+            // Offloaded (OpenCL/Metal) paths keep the defaults and the auto
+            // probe — the quantized-V requirement above is not safe to assume
+            // on a backend this has not been measured on.
+            flash_attn_type: 'auto' as const,
+          }),
     },
     // llama.rn reports 1..100; normalize to 0..1 for the UI.
     onProgress ? (p) => onProgress(p / 100) : undefined,
   );
 
-  // Enable vision. Without this, image parts in messages are ignored.
-  if (spec.vision && files.mmproj) {
-    await ctx.initMultimodal({
-      path: files.mmproj,
-      use_gpu: Platform.OS === 'ios',
-    });
-  }
+  // Vision is NOT initialized here — see ensureMultimodal(). The projector is
+  // a separate multi-hundred-MB file (940 MiB for the catalog's recommended
+  // Gemma E2B) and loading it at model-load time made every text-only chat pay
+  // for a capability most sessions never use.
   return ctx;
+}
+
+/**
+ * Load the vision projector on first actual image use, not at model load.
+ *
+ * `mmproj-F16.gguf` for the catalog's suggested Gemma E2B is 940 MiB, and on
+ * Android it lands in anonymous RAM (`use_gpu` is false there) — the memory the
+ * low-memory killer weighs. Loading it eagerly meant a user who never attaches
+ * a photo still carried it, resident, for the whole session, on top of the
+ * weights and the KV cache.
+ *
+ * Once loaded it STAYS loaded: the cost is a one-off delay on the first image
+ * turn, and paying it again on every image would be worse than holding it.
+ * doUnload/doSuspend clear the flag along with the context.
+ *
+ * Callers are already inside the serialization queue — this must not re-enter
+ * enqueue(), or it would deadlock behind the generate() holding the chain.
+ */
+async function ensureMultimodal(): Promise<void> {
+  if (multimodalReady || !context || !loadedSpec?.vision || !loadedFiles?.mmproj) return;
+  await context.initMultimodal({
+    path: loadedFiles.mmproj,
+    use_gpu: Platform.OS === 'ios',
+  });
+  multimodalReady = true;
 }
 
 async function doLoad(
@@ -167,6 +232,16 @@ async function doLoad(
   if (Platform.OS === 'android' && gpuProbe === 'probing') {
     // gpu=false with layers requested means no usable device — don't reprobe.
     await writeGpuProbe(ctx.gpu ? 'ok' : 'failed');
+    if (!ctx.gpu) {
+      // A SOFT probe failure: init succeeded but nothing was offloaded, so this
+      // context was built down the offloaded branch — without the quantized K/V
+      // caches and explicit flash attention that the CPU path relies on. Keeping
+      // it costs a measured 105 MiB of f16 KV for the whole session, on exactly
+      // the devices that just proved they have no GPU to spare it. Rebuild on
+      // the CPU path now that we know.
+      await releaseAllLlama();
+      ctx = await initContext(spec, files, 0, onProgress);
+    }
   }
 
   context = ctx;
@@ -182,6 +257,7 @@ async function doUnload(): Promise<void> {
   suspendedSpec = null;
   suspendedFiles = null;
   sessionSaved = false;
+  multimodalReady = false;
 }
 
 async function doSuspend(): Promise<void> {
@@ -207,6 +283,7 @@ async function doSuspend(): Promise<void> {
   loadedFiles = null;
   suspendedSpec = spec;
   suspendedFiles = files;
+  multimodalReady = false;
 }
 
 async function doResume(): Promise<void> {
@@ -242,6 +319,8 @@ async function doGenerate(
   // extracts `image_url` parts into the native multimodal path.
   let payload: unknown[] = messages;
   if (opts?.imageUri) {
+    // First image of this context pays for the projector; later ones don't.
+    await ensureMultimodal();
     const path = opts.imageUri.replace('file://', '');
     payload = messages.map((m, i) =>
       i === messages.length - 1 && m.role === 'user'

@@ -30,6 +30,9 @@ const SYSTEM: ChatMessage = {
 // turns; an unbounded history grows the prompt (and KV cache) every turn until
 // it overflows the 4096-token context. Spoken replies are short, so a few
 // turns of context is plenty.
+/** Caption repaint interval while streaming. Matches the chat screen's flush. */
+const CAPTION_MS = 33;
+
 const MAX_HISTORY = 12; // messages (6 user/assistant turns)
 
 const CAPTIONS: Record<OrbPhase, string> = {
@@ -58,6 +61,9 @@ export default function Live() {
   const aliveRef = useRef(true);
   const vadRef = useRef<VadHandle | null>(null);
   const historyRef = useRef<ChatMessage[]>([]);
+  // The engine driving this session, captured so exit/unmount can interrupt an
+  // in-flight generation without re-resolving the active model.
+  const stopEngineRef = useRef<(() => void) | null>(null);
 
   async function run() {
     const active = ModelManager.getActive();
@@ -118,6 +124,18 @@ export default function Live() {
           let reply = '';
           let started = false;
           try {
+            // The caption is repainted on a timer, not per token. Tokens arrive
+            // faster than React can paint, and every setCaption here re-renders
+            // the screen including the animated orb — stealing JS-thread time
+            // from this very callback, which is also what feeds speech.push()
+            // and therefore time-to-first-audio. Chat fixed this the same way;
+            // live, where latency actually matters, had been left out.
+            let captionTimer: ReturnType<typeof setTimeout> | null = null;
+            const flushCaption = () => {
+              captionTimer = null;
+              if (aliveRef.current) setCaption(reply);
+            };
+            stopEngineRef.current = () => void engineFor(active).stop();
             const res = await engineFor(active).generate(
               [SYSTEM, ...historyRef.current],
               (tok) => {
@@ -127,13 +145,16 @@ export default function Live() {
                   started = true;
                   setPhase('speaking');
                 }
-                setCaption(reply);
+                // Audio is never delayed — only the on-screen text is batched.
                 speech.push(tok);
+                if (!captionTimer) captionTimer = setTimeout(flushCaption, CAPTION_MS);
               },
               // Spoken replies are one or two sentences — cap tokens so a runaway
               // generation can't stall the conversation.
               { disableThinking: true, maxTokens: 220 },
             );
+            if (captionTimer) clearTimeout(captionTimer);
+            if (aliveRef.current && reply) setCaption(reply);
             // Grammar/non-streaming fallback: use the final text if nothing streamed.
             if (!reply.trim() && res.text) {
               reply = res.text;
@@ -179,6 +200,12 @@ export default function Live() {
     aliveRef.current = false;
     vadRef.current?.cancel();
     Tts.stop();
+    // aliveRef alone cannot be observed until engine.generate() resolves, so
+    // without this the model keeps decoding up to maxTokens on all four
+    // performance cores for a reply nobody will hear — and the chat screen's
+    // next message queues behind it. stop() is the documented un-queued
+    // exception in LlamaEngine precisely for this.
+    stopEngineRef.current?.();
     router.back();
   };
 
@@ -200,6 +227,7 @@ export default function Live() {
       aliveRef.current = false;
       vadRef.current?.cancel();
       Tts.stop();
+      stopEngineRef.current?.();
     };
     // run once on mount; the conversation loop is controlled by aliveRef.
     // eslint-disable-next-line react-hooks/exhaustive-deps

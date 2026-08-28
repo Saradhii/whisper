@@ -7,6 +7,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -492,9 +493,15 @@ export default function Chat() {
     );
   };
 
-  const lastAssistantId = [...messages]
-    .reverse()
-    .find((m) => m.role === 'assistant' && !isMachinery(m))?.id;
+  // Walk backwards instead of copying and reversing the whole conversation on
+  // every streaming frame.
+  const lastAssistantId = useMemo(() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i];
+      if (m && m.role === 'assistant' && !isMachinery(m)) return m.id;
+    }
+    return undefined;
+  }, [messages]);
 
   // The trailing assistant bubble renders as plain <Text> while the turn is
   // busy; markdown is parsed once, when the turn settles. Derived — no state
@@ -1027,7 +1034,12 @@ const AssistantBubble = memo(function AssistantBubble({
   const styles = useThemedStyles(createStyles);
   const markdownStyles = useThemedStyles(createMarkdownStyles);
   const [showThoughts, setShowThoughts] = useState(false);
-  const { thinking, answer } = splitThinking(content);
+  // splitThinking regex-scans and reallocates the ENTIRE reply, and this bubble
+  // re-renders on every 33 ms token flush — so an N-char answer was rescanned
+  // ~N/flush times over a turn, on the same JS thread that services the token
+  // callback. Markdown was already deferred to settle for this exact reason;
+  // this had been left running per frame.
+  const { thinking, answer } = useMemo(() => splitThinking(content), [content]);
   const stillThinking = thinking !== null && !answer;
 
   return (
