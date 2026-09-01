@@ -58,7 +58,7 @@ export default function VoiceSettings() {
       <View style={styles.header}>
         <Touchable style={styles.backRow} onPress={() => router.back()} hitSlop={12}>
           <Ionicons name="chevron-back" size={18} color={colors.primary} />
-          <Text style={styles.back}>Chat</Text>
+          <Text style={styles.back}>Settings</Text>
         </Touchable>
         <Text style={styles.title}>Voice</Text>
         <Text style={styles.subtitle}>Spoken replies · on-device · offline</Text>
@@ -111,10 +111,17 @@ export default function VoiceSettings() {
                 <Text style={styles.voiceDesc}>{item.description}</Text>
               </View>
               {active ? (
-                <Text style={styles.activeTag}>SELECTED</Text>
+                <View style={[styles.voiceAction, styles.voiceActionOn]}>
+                  <Ionicons name="checkmark" size={14} color={colors.primary} />
+                  <Text style={styles.voiceActionOnText}>Selected</Text>
+                </View>
               ) : (
-                <Touchable style={styles.useBtn} onPress={() => TtsStore.setVoice(item.sid)}>
-                  <Text style={styles.useText}>Use</Text>
+                <Touchable
+                  style={styles.voiceAction}
+                  onPress={() => TtsStore.setVoice(item.sid)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Use the ${item.name} voice`}>
+                  <Text style={styles.voiceActionText}>Use</Text>
                 </Touchable>
               )}
             </View>
@@ -148,7 +155,7 @@ function Row({
         value={value}
         onValueChange={onValueChange}
         trackColor={{ true: colors.primary, false: colors.border }}
-        thumbColor={colors.bg}
+        thumbColor={colors.switchThumb}
       />
     </View>
   );
@@ -195,12 +202,25 @@ const createStyles = (colors: Colors) =>
     },
     voiceName: { color: colors.text, fontSize: 15, fontWeight: '600' },
     voiceDesc: { color: colors.textSecondary, fontSize: 12, marginTop: 2 },
-    activeTag: { color: colors.primary, fontSize: 11, fontWeight: '700' },
-    useBtn: {
-      backgroundColor: colors.primary,
-      borderRadius: 14,
-      paddingHorizontal: 16,
-      paddingVertical: 8,
+    // One control column, one width. Before, the chosen voice showed the word
+    // SELECTED and the other nine showed a filled primary button — ten equally
+    // loud commit buttons stacked down the page, with a ragged right edge where
+    // the odd one out was text. Now both states are the same pill in the same
+    // slot: the selected one carries the color, the rest are outlines, and the
+    // eye can find the current voice in one pass.
+    voiceAction: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 4,
+      minWidth: 92,
+      height: 34,
+      paddingHorizontal: 12,
+      borderRadius: 17,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
     },
-    useText: { color: colors.onPrimary, fontWeight: '600', fontSize: 13 },
+    voiceActionText: { color: colors.text, fontWeight: '600', fontSize: 13 },
+    voiceActionOn: { backgroundColor: colors.primarySoft, borderColor: colors.primary },
+    voiceActionOnText: { color: colors.primary, fontWeight: '600', fontSize: 13 },
   });

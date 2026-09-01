@@ -47,6 +47,12 @@ export type Colors = {
   dangerBg: string;
   warn: string;
 
+  /** Switch knob. Not `bg`: a knob painted the page color reads as a hole
+   *  bitten out of the track rather than as a control, which is exactly how it
+   *  failed on dark. It must stay light in BOTH themes — the knob's job is to
+   *  be the bright thing riding the track. */
+  switchThumb: string;
+
   /** Modal/drawer backdrop. */
   scrim: string;
   /** Drop shadow color (shadows must invert or they vanish on dark). */
@@ -78,6 +84,8 @@ export const lightColors: Colors = {
   danger: '#c81e1e',
   dangerBg: '#fdeceb',
   warn: '#b45309',
+
+  switchThumb: '#ffffff',
 
   scrim: 'rgba(20,12,18,0.35)',
   shadow: '#000000',
@@ -111,6 +119,8 @@ export const darkColors: Colors = {
   danger: '#ff6b62',
   dangerBg: '#361d1d',
   warn: '#e3a63f',
+
+  switchThumb: '#f4f1f6',
 
   scrim: 'rgba(0,0,0,0.6)',
   shadow: '#000000',

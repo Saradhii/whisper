@@ -147,7 +147,7 @@ export default function SettingsScreen() {
             value={s.showPlanSteps}
             onValueChange={(v) => Settings.set({ showPlanSteps: v })}
             trackColor={{ true: colors.primary, false: colors.border }}
-            thumbColor={colors.bg}
+            thumbColor={colors.switchThumb}
           />
         </Touchable>
         <Touchable
@@ -164,7 +164,7 @@ export default function SettingsScreen() {
             value={s.devTrace}
             onValueChange={(v) => Settings.set({ devTrace: v })}
             trackColor={{ true: colors.primary, false: colors.border }}
-            thumbColor={colors.bg}
+            thumbColor={colors.switchThumb}
           />
         </Touchable>
         <Touchable
@@ -183,7 +183,7 @@ export default function SettingsScreen() {
             value={s.evalRecord}
             onValueChange={(v) => Settings.set({ evalRecord: v })}
             trackColor={{ true: colors.primary, false: colors.border }}
-            thumbColor={colors.bg}
+            thumbColor={colors.switchThumb}
           />
         </Touchable>
         <Touchable
@@ -263,6 +263,10 @@ const createStyles = (colors: Colors) =>
     input: {
       color: colors.text,
       backgroundColor: colors.surface,
+      // Without an edge this reads as a paragraph of placeholder text rather
+      // than as something you can type into — surface sits too close to bg.
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
       borderRadius: 12,
       paddingHorizontal: 14,
       paddingVertical: 10,
