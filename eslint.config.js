@@ -37,6 +37,27 @@ module.exports = defineConfig([
       'regexp/no-super-linear-move': 'error',
     },
   },
+  // src/ui/beam is vendored third-party source, not ours — a copy of the
+  // unpublished border-beam-native package (see src/ui/beam/VENDOR.md for the
+  // pinned commit and the full list of local edits). It is node_modules by
+  // another name: we hold it to compiling under our strict tsconfig, but not to
+  // our lint rules, because every rule we enforce on it is a diff we have to
+  // re-apply by hand on the next upstream sync. The three below are upstream's
+  // own patterns, all benign in this component's usage:
+  //   set-state-in-effect  — the active→mounted fade gate, which runs once
+  //   rules-of-hooks       — PulseBeam's makeLayer() calls useDerivedValue
+  //                          unconditionally, three times, in a fixed order
+  //   no-unused-vars       — dead helpers kept for parity with the web source
+  // If we ever start editing this directory as our own code, delete this block
+  // rather than growing it.
+  {
+    files: ['src/ui/beam/**'],
+    rules: {
+      'react-hooks/set-state-in-effect': 'off',
+      'react-hooks/rules-of-hooks': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
+    },
+  },
   {
     ignores: ['android/**', 'ios/**', 'node_modules/**', '.expo/**', 'expo-env.d.ts'],
   },

@@ -23,7 +23,6 @@ import {
   Share,
   StyleSheet,
   Text,
-  TextInput,
   View,
 } from 'react-native';
 import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
@@ -37,10 +36,10 @@ import { runAgent, type AgentEvent } from '@/src/agent/loop';
 import { TOOL_PROMPT_RESERVE } from '@/src/agent/prompt';
 import { TOOLS } from '@/src/agent/tools';
 import * as Trace from '@/src/agent/trace';
+import Composer from '@/src/chat/Composer';
 import DrawerMenu from '@/src/chat/DrawerMenu';
 import { ChatOrb, CHIP_ORB, ThinkingBubble } from '@/src/chat/ChatOrb';
 import type { ThinkingPhase } from '@/src/chat/orbPhase';
-import Waveform from '@/src/voice/Waveform';
 import { ensureVerified } from '@/src/models/verifyModel';
 import { Touchable, useTheme, useThemedStyles, type Colors } from '@/src/theme';
 import * as Tts from '@/src/voice/tts/TtsService';
@@ -126,6 +125,8 @@ export default function Chat() {
   const [loadProgress, setLoadProgress] = useState<{ id: string; p: number } | null>(null);
   const [input, setInput] = useState('');
   const [image, setImage] = useState<string | null>(null);
+  // Height of the composer surface, so the jump button can clear it.
+  const [bottomHeight, setBottomHeight] = useState(0);
   const [busy, setBusy] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
   // Stable so the drawer's own callbacks don't change identity every render.
@@ -688,7 +689,7 @@ export default function Chat() {
 
       {showJump ? (
         <Touchable
-          style={[styles.jumpBtn, { bottom: insets.bottom + 96 }]}
+          style={[styles.jumpBtn, { bottom: bottomHeight + 12 }]}
           onPress={jumpToEnd}
           accessibilityRole="button"
           accessibilityLabel="Scroll to latest message">
@@ -696,15 +697,13 @@ export default function Chat() {
         </Touchable>
       ) : null}
 
-      <KeyboardAvoidingView behavior="padding">
-        {image ? (
-          <View style={styles.attachRow}>
-            <Image source={{ uri: image }} style={styles.attachThumb} />
-            <Touchable onPress={() => setImage(null)}>
-              <Text style={styles.attachRemove}>Remove</Text>
-            </Touchable>
-          </View>
-        ) : null}
+      <KeyboardAvoidingView
+        behavior="padding"
+        // The composer card is no longer a fixed-height row: it grows with an
+        // attachment, with the model chip, and with every line typed. The jump
+        // button sits above it, so measure rather than guess a clearance that
+        // would be wrong for most of those states.
+        onLayout={(e) => setBottomHeight(e.nativeEvent.layout.height)}>
         {voice.state.status === 'downloading' || voice.state.status === 'error' ? (
           <View style={styles.voiceRow}>
             <Text style={styles.voiceText}>
@@ -720,82 +719,27 @@ export default function Chat() {
                   </Touchable>
                 ) : null}
                 <Touchable onPress={voice.reset}>
-                  <Text style={styles.attachRemove}>Dismiss</Text>
+                  <Text style={styles.voiceDismiss}>Dismiss</Text>
                 </Touchable>
               </View>
             ) : null}
           </View>
         ) : null}
-        {voice.state.status === 'recording' ? (
-          // Recording: cancel · live waveform · confirm (stop & transcribe).
-          <View style={[styles.inputRow, { paddingBottom: insets.bottom + 8 }]}>
-            <Touchable
-              style={styles.iconBtn}
-              onPress={voice.cancel}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel="Cancel recording">
-              <Ionicons name="close-outline" size={22} color={colors.textSecondary} />
-            </Touchable>
-            <View style={styles.waveWrap}>
-              <Waveform active />
-            </View>
-            <Touchable
-              style={styles.sendBtn}
-              onPress={voice.stop}
-              accessibilityRole="button"
-              accessibilityLabel="Finish recording and transcribe">
-              <Ionicons name="checkmark" size={20} color={colors.onPrimary} />
-            </Touchable>
-          </View>
-        ) : (
-          <View style={[styles.inputRow, { paddingBottom: insets.bottom + 8 }]}>
-            {active?.vision ? (
-              <Touchable
-                style={[styles.iconBtn, (!ready || busy) && styles.sendBtnDisabled]}
-                onPress={pickImage}
-                disabled={!ready || busy}
-                accessibilityRole="button"
-                accessibilityLabel="Attach an image">
-                <Ionicons name="add-outline" size={24} color={colors.text} />
-              </Touchable>
-            ) : null}
-            <Touchable
-              style={[styles.iconBtn, (!ready || busy) && styles.sendBtnDisabled]}
-              onPress={voice.start}
-              disabled={!ready || busy || voice.state.status === 'transcribing'}
-              accessibilityRole="button"
-              accessibilityLabel="Voice input">
-              {voice.state.status === 'transcribing' ? (
-                <ActivityIndicator size="small" color={colors.textSecondary} />
-              ) : (
-                <Ionicons name="mic-outline" size={22} color={colors.text} />
-              )}
-            </Touchable>
-            <TextInput
-              style={styles.input}
-              value={input}
-              onChangeText={setInput}
-              placeholder={
-                voice.state.status === 'transcribing'
-                  ? 'Transcribing…'
-                  : ready
-                    ? 'Ask anything…'
-                    : 'Loading…'
-              }
-              placeholderTextColor={colors.textFaint}
-              editable={ready && !busy}
-              multiline
-            />
-            <Touchable
-              style={[styles.sendBtn, !ready && styles.sendBtnDisabled]}
-              onPress={busy ? stop : send}
-              accessibilityRole="button"
-              accessibilityLabel={busy ? 'Stop generating' : 'Send message'}>
-              <Text style={styles.sendText}>{busy ? 'Stop' : 'Send'}</Text>
-            </Touchable>
-          </View>
-        )}
+        <Composer
+          value={input}
+          onChangeText={setInput}
+          onSend={send}
+          onStop={stop}
+          busy={busy}
+          ready={ready}
+          modelName={active?.name ?? null}
+          onPressModel={() => router.push('/models')}
+          image={image}
+          onPickImage={active?.vision ? () => void pickImage() : null}
+          onRemoveImage={() => setImage(null)}
+          voice={voice}
+          bottomInset={insets.bottom}
+        />
       </KeyboardAvoidingView>
     </View>
   );
@@ -1173,9 +1117,20 @@ const createStyles = (colors: Colors) =>
     ctaText: { color: colors.onPrimary, fontWeight: '600' },
     listContent: { padding: 12, gap: 10 },
     bubble: { maxWidth: '85%', borderRadius: 14, paddingHorizontal: 14, paddingVertical: 10 },
-    user: { alignSelf: 'flex-end', backgroundColor: colors.primary },
+    // Tinted, not filled. A solid primary bubble made every user turn the
+    // loudest thing on the screen and put it in direct competition with Send —
+    // but primary means "tap this to commit", and a message you already sent is
+    // not a control. primarySoft keeps the turn unmistakably yours (palette.ts
+    // sanctions it for red-family surfaces) without shouting, and the hairline
+    // keeps the edge defined now that the fill is close to the background.
+    user: {
+      alignSelf: 'flex-end',
+      backgroundColor: colors.primarySoft,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.border,
+    },
     assistant: { alignSelf: 'flex-start', backgroundColor: colors.surface },
-    userText: { color: colors.onPrimary, fontSize: 15, lineHeight: 21 },
+    userText: { color: colors.text, fontSize: 15, lineHeight: 21 },
     bubbleText: { color: colors.text, fontSize: 15, lineHeight: 21 },
     // Fully rounded pill, sized between a chip and a bubble: it sits in the
     // same column as the assistant's replies but must never be mistaken for
@@ -1287,48 +1242,7 @@ const createStyles = (colors: Colors) =>
       marginBottom: 4,
     },
     bubbleImage: { width: 200, height: 200, borderRadius: 10, marginBottom: 6, resizeMode: 'cover' },
-    attachRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 12,
-      paddingHorizontal: 12,
-      paddingVertical: 8,
-    },
-    attachThumb: { width: 44, height: 44, borderRadius: 8 },
-    attachRemove: { color: colors.textSecondary, fontSize: 13 },
-    inputRow: {
-      flexDirection: 'row',
-      alignItems: 'flex-end',
-      gap: 8,
-      paddingHorizontal: 12,
-      paddingTop: 8,
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderTopColor: colors.border,
-    },
-    input: {
-      flex: 1,
-      color: colors.text,
-      backgroundColor: colors.surface,
-      borderRadius: 18,
-      paddingHorizontal: 16,
-      paddingVertical: 10,
-      maxHeight: 120,
-      fontSize: 15,
-    },
-    iconBtn: {
-      width: 44,
-      height: 44,
-      borderRadius: 22,
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: colors.surface,
-    },
-    waveWrap: {
-      flex: 1,
-      backgroundColor: colors.surface,
-      borderRadius: 18,
-      justifyContent: 'center',
-    },
+    voiceDismiss: { color: colors.textSecondary, fontSize: 13 },
     voiceRow: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -1339,14 +1253,6 @@ const createStyles = (colors: Colors) =>
     voiceText: { color: colors.textSecondary, fontSize: 13, flex: 1, marginRight: 8 },
     voiceActions: { flexDirection: 'row', alignItems: 'center', gap: 14 },
     voiceLink: { color: colors.primary, fontSize: 13, fontWeight: '600' },
-    sendBtn: {
-      backgroundColor: colors.primary,
-      borderRadius: 18,
-      paddingHorizontal: 18,
-      paddingVertical: 12,
-    },
-    sendText: { color: colors.onPrimary, fontWeight: '600' },
-    sendBtnDisabled: { opacity: 0.4 },
   });
 
 // Markdown theme for assistant answers, matched to the bubble it sits in.
