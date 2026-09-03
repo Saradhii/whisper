@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AccessibilityInfo, View, useColorScheme, type LayoutChangeEvent } from 'react-native';
+import {
+  AccessibilityInfo,
+  StyleSheet,
+  View,
+  useColorScheme,
+  type LayoutChangeEvent,
+} from 'react-native';
 import { useClock } from '@shopify/react-native-skia';
 import {
   Easing,
@@ -129,60 +135,69 @@ export function BorderBeam({
   return (
     <View style={style} onLayout={handleLayout}>
       {children}
-      {mounted && hasSize && (size === 'sm' || size === 'md') && (
-        <RotateBeam
-          size={size}
-          variant={colorVariant}
-          theme={resolvedTheme}
-          staticColors={finalStatic}
-          duration={finalDuration}
-          borderRadius={finalRadius}
-          brightness={finalBrightness}
-          saturation={finalSaturation}
-          hueRange={finalHueRange}
-          strength={clampedStrength}
-          width={layout.width}
-          height={layout.height}
-          clock={clock}
-          fade={fade}
-        />
-      )}
-      {mounted && hasSize && size === 'line' && (
-        <LineBeam
-          variant={colorVariant}
-          theme={resolvedTheme}
-          staticColors={finalStatic}
-          duration={finalDuration}
-          borderRadius={finalRadius}
-          brightness={finalBrightness}
-          saturation={finalSaturation}
-          hueRange={finalHueRange}
-          strength={clampedStrength}
-          width={layout.width}
-          height={layout.height}
-          clock={clock}
-          fade={fade}
-        />
-      )}
-      {mounted && hasSize && isPulse && (
-        <PulseBeam
-          size={size as 'pulse-inner' | 'pulse-outside'}
-          variant={colorVariant}
-          theme={resolvedTheme}
-          staticColors={finalStatic}
-          duration={finalDuration}
-          borderRadius={finalRadius}
-          brightness={finalBrightness}
-          saturation={finalSaturation}
-          strength={clampedStrength}
-          width={layout.width}
-          height={layout.height}
-          clock={clock}
-          fade={fade}
-          reduceMotion={reduceMotion}
-          tuning={resolvedTuning}
-        />
-      )}
+      {/* The beams sit in a plain View that refuses touches, not on the Canvas
+          alone. Skia's Canvas does not honor pointerEvents="none" on Android
+          (new architecture): an absolutely-positioned Canvas over the children
+          swallowed every tap, so the composer's TextInput never focused and its
+          chips never fired. A ReactViewGroup with pointerEvents="none" is
+          skipped by both the native and the JS touch dispatch, and its
+          children with it. */}
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        {mounted && hasSize && (size === 'sm' || size === 'md') && (
+          <RotateBeam
+            size={size}
+            variant={colorVariant}
+            theme={resolvedTheme}
+            staticColors={finalStatic}
+            duration={finalDuration}
+            borderRadius={finalRadius}
+            brightness={finalBrightness}
+            saturation={finalSaturation}
+            hueRange={finalHueRange}
+            strength={clampedStrength}
+            width={layout.width}
+            height={layout.height}
+            clock={clock}
+            fade={fade}
+          />
+        )}
+        {mounted && hasSize && size === 'line' && (
+          <LineBeam
+            variant={colorVariant}
+            theme={resolvedTheme}
+            staticColors={finalStatic}
+            duration={finalDuration}
+            borderRadius={finalRadius}
+            brightness={finalBrightness}
+            saturation={finalSaturation}
+            hueRange={finalHueRange}
+            strength={clampedStrength}
+            width={layout.width}
+            height={layout.height}
+            clock={clock}
+            fade={fade}
+          />
+        )}
+        {mounted && hasSize && isPulse && (
+          <PulseBeam
+            size={size as 'pulse-inner' | 'pulse-outside'}
+            variant={colorVariant}
+            theme={resolvedTheme}
+            staticColors={finalStatic}
+            duration={finalDuration}
+            borderRadius={finalRadius}
+            brightness={finalBrightness}
+            saturation={finalSaturation}
+            strength={clampedStrength}
+            width={layout.width}
+            height={layout.height}
+            clock={clock}
+            fade={fade}
+            reduceMotion={reduceMotion}
+            tuning={resolvedTuning}
+          />
+        )}
+      </View>
     </View>
   );
 }

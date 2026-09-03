@@ -123,13 +123,6 @@ export default function Models() {
           if (!models.length) return null;
           const installed = models.filter((m) => ModelManager.getStatus(m.id).installed).length;
           const open = openTiers.has(tier);
-          // When every model in a tier is too big, the per-card warning was the
-          // same sentence three times in one screenful. Say it once, on the
-          // group, and let the cards stay quiet. A tier where only SOME models
-          // are at risk still warns per card, because there the warning is
-          // telling you which ones to avoid rather than repeating itself.
-          const allExceedRam =
-            models.length > 0 && models.every((m) => exceedsRam(m, deviceRam));
           return (
             <View key={tier} style={styles.group}>
               <Touchable
@@ -155,14 +148,6 @@ export default function Models() {
                   color={colors.primary}
                 />
               </Touchable>
-              {open && allExceedRam ? (
-                <View style={styles.groupWarn}>
-                  <Ionicons name="warning-outline" size={14} color={colors.warn} />
-                  <Text style={styles.warn}>
-                    None of these fit this phone&apos;s {formatBytes(deviceRam!)} of RAM.
-                  </Text>
-                </View>
-              ) : null}
               {open
                 ? models.map((item) => (
                     <ModelRow
@@ -171,7 +156,6 @@ export default function Models() {
                       status={ModelManager.getStatus(item.id)}
                       isActive={active?.id === item.id}
                       deviceRam={deviceRam}
-                      showRamWarning={!allExceedRam}
                       onDownload={() => startDownload(item)}
                       onPause={() => void ModelManager.pauseDownload(item.id)}
                       onCancel={() => void ModelManager.cancelDownload(item.id)}
@@ -189,13 +173,6 @@ export default function Models() {
   );
 }
 
-/** Whether a model needs more RAM than this phone has. One definition, used by
- *  both the per-card warning and the group-level one, so the two can never
- *  disagree about which models are at risk. */
-function exceedsRam(spec: ModelSpec, deviceRam: number | null): boolean {
-  return !!deviceRam && spec.minRamBytes > 0 && spec.minRamBytes > deviceRam;
-}
-
 // Memoized on data props (callbacks are recreated per parent render but close
 // over the same stable spec, so they're excluded from the comparison) — during
 // a download only the downloading row re-renders, not all 8+ cards.
@@ -205,7 +182,6 @@ const ModelRow = memo(
     status,
     isActive,
     deviceRam,
-    showRamWarning,
     onDownload,
     onPause,
     onCancel,
@@ -216,8 +192,6 @@ const ModelRow = memo(
     status: ModelManager.ModelStatus;
     isActive: boolean;
     deviceRam: number | null;
-    /** False when the group already carries the warning for all its models. */
-    showRamWarning: boolean;
     onDownload: () => void;
     onPause: () => void;
     onCancel: () => void;
@@ -226,7 +200,7 @@ const ModelRow = memo(
   }) {
     const { colors } = useTheme();
     const styles = useThemedStyles(createStyles);
-    const ramRisk = showRamWarning && exceedsRam(spec, deviceRam);
+    const ramRisk = !!deviceRam && spec.minRamBytes > 0 && spec.minRamBytes > deviceRam;
 
   return (
     <View style={styles.card}>
@@ -250,7 +224,9 @@ const ModelRow = memo(
       {ramRisk ? (
         <View style={styles.warnRow}>
           <Ionicons name="warning-outline" size={14} color={colors.warn} />
-          <Text style={styles.warn}>Likely to crash — needs more than {formatBytes(deviceRam!)}.</Text>
+          <Text style={styles.warn}>
+            This device has {formatBytes(deviceRam!)} RAM — this model will likely crash it.
+          </Text>
         </View>
       ) : null}
 
@@ -309,7 +285,6 @@ const ModelRow = memo(
     prev.spec === next.spec &&
     prev.isActive === next.isActive &&
     prev.deviceRam === next.deviceRam &&
-    prev.showRamWarning === next.showRamWarning &&
     prev.status.installed === next.status.installed &&
     prev.status.downloading === next.status.downloading &&
     prev.status.paused === next.status.paused &&
@@ -338,11 +313,9 @@ function AddCustomModel() {
 
   if (!open) {
     return (
-      <Touchable style={styles.advancedClosed} onPress={() => setOpen(true)} hitSlop={8}>
-        <Ionicons name="add-circle-outline" size={18} color={colors.icon} />
-        <Text style={styles.advancedToggle}>Add your own model</Text>
-        <View style={styles.flex} />
-        <Ionicons name="chevron-forward" size={16} color={colors.icon} />
+      <Touchable style={styles.advancedRow} onPress={() => setOpen(true)} hitSlop={8}>
+        <Text style={styles.advancedToggle}>Advanced: add your own model</Text>
+        <Ionicons name="chevron-forward" size={15} color={colors.textFaint} />
       </Touchable>
     );
   }
@@ -407,14 +380,8 @@ const createStyles = (colors: Colors) =>
     flex: { flex: 1 },
     listContent: { padding: 12, gap: 14 },
     group: {
-      // Not borderStrong. palette.ts reserves that for an ACTIVE or SELECTED
-      // card, which is how settings.tsx uses it (the chosen segment) — but
-      // every tier group had it, collapsed ones included, so it marked nothing.
-      // Around an expanded group it also ran a red line down both sides of the
-      // page for hundreds of pixels, which read as an error box rather than a
-      // section. A group is a container; containers get `border`.
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
+      borderWidth: 1.5,
+      borderColor: colors.borderStrong,
       borderRadius: 16,
       overflow: 'hidden',
       gap: 10,
@@ -491,30 +458,8 @@ const createStyles = (colors: Colors) =>
       gap: 4,
       paddingVertical: 12,
     },
-    // Centered faint text read as a caption, not something you could press.
-    // Same shape as every other navigable row in the app: bordered, left-aligned
-    // label, chevron on the right.
-    advancedClosed: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      paddingHorizontal: 14,
-      paddingVertical: 14,
-      borderRadius: 14,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
-      backgroundColor: colors.surface,
-    },
     advancedToggle: {
-      color: colors.text,
-      fontSize: 14,
-      fontWeight: '500',
-    },
-    groupWarn: {
-      flexDirection: 'row',
-      alignItems: 'flex-start',
-      gap: 5,
-      paddingHorizontal: 14,
-      marginTop: -2,
+      color: colors.textFaint,
+      fontSize: 13,
     },
   });

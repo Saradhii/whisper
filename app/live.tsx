@@ -35,6 +35,16 @@ const CAPTION_MS = 33;
 
 const MAX_HISTORY = 12; // messages (6 user/assistant turns)
 
+// What the caption says when a listening window ends without a turn. Three
+// cases, because they want three different things from the user: the mic
+// heard essentially nothing (a peak under 0.02 is recorder hiss — the phone
+// is muted, covered, or another app holds the mic); it heard sound that
+// never read as speech (too quiet or too far); or it heard speech that
+// whisper could not make words of.
+const NO_AUDIO_HINT = "I can't hear the microphone. Is another app using it?";
+const NO_SPEECH_HINT = "I didn't catch that — try speaking a little closer.";
+const NO_WORDS_HINT = "I heard something but couldn't make out words — say it again?";
+
 const CAPTIONS: Record<OrbPhase, string> = {
   connecting: 'Getting ready…',
   listening: 'Listening…',
@@ -99,21 +109,36 @@ export default function Live() {
           // 1. Listen (release any playback first so the mic gets a clean session)
           Tts.stop();
           setPhase('listening');
-          setCaption('');
+          // The caption is NOT cleared here: a "didn't hear anything" hint from
+          // the previous window has to survive into this one, or it would flash
+          // for a frame and vanish. It clears on the next transcript.
           const { promise, handle } = listenOnce((amp) => {
             if (aliveRef.current) mic.set(orbLevel(amp));
           });
           vadRef.current = handle;
-          const pcm = await promise;
+          const { pcm, peak, floor } = await promise;
           mic.set(0);
           if (!aliveRef.current) return;
-          if (!pcm) continue; // no speech — keep listening
+          if (!pcm) {
+            // No speech — keep listening, but say so. This used to restart
+            // silently, and on a phone whose mic never crossed the old fixed
+            // threshold that looked like "Listening…" forever with no clue
+            // why. The two numbers are the clue: peak is what the mic heard,
+            // floor is the room.
+            if (__DEV__) console.log(`[live] no speech: peak=${peak.toFixed(3)} floor=${floor.toFixed(3)}`);
+            setCaption(peak < 0.02 ? NO_AUDIO_HINT : NO_SPEECH_HINT);
+            continue;
+          }
 
           // 2. Transcribe
           setPhase('thinking');
           const text = await SpeechService.transcribe(pcm);
           if (!aliveRef.current) return;
-          if (!text.trim()) continue;
+          if (!text.trim()) {
+            if (__DEV__) console.log(`[live] empty transcript: peak=${peak.toFixed(3)} floor=${floor.toFixed(3)}`);
+            setCaption(NO_WORDS_HINT);
+            continue;
+          }
           setCaption(text);
           historyRef.current.push({ role: 'user', content: text });
 
