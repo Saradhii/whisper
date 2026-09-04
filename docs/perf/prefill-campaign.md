@@ -490,13 +490,40 @@ whole tool descriptions — the strongest lever this codebase has on a 1.7B — 
 the authority of an eval that cannot see the difference. The three slices are
 rules ~679, catalog ~722, examples ~608: there is no fat target.
 
+**The requirement is currently met by nothing that ships.** Enumerating which
+models satisfy "a tools model needs `n_ctx` >= reserve + 1024 tokens of real
+history" produces an exemption list of six — and six is *every* tools-capable
+model in the catalog: qwen3-4b, llama-3.2-3b, phi-4-mini, smollm3-3b,
+qwen3-1.7b, qwen3-1.7b-abliterated. All sit at 4096; all get ~896 tokens of
+history against a 1024 minimum. It reads like an exception list and it is
+actually the whole set.
+
+A ratchet guards it, verified to bite three ways: adding a seventh model goes
+red, dropping a still-broken one goes red, and raising an exempt model to
+`n_ctx` 8192 goes red with "now has room for the agent prompt — remove it from
+NCTX_EXEMPT". So the list cannot widen, cannot go stale, and cannot be escaped
+by deletion — and the moment a window is raised, the test names the line to
+delete.
+
 That leaves two ways out:
 
 1. **`n_ctx` 4096 → 8192.** History goes to ~5481 tokens. One line in
-   `catalog.ts`, zero accuracy risk. Gated entirely on whether the RAM fits —
-   being measured on device, along with whether the larger KV changes prefill
-   throughput, and what it does to the ~100 MB prefix KV snapshot whose size
-   scales with cache geometry.
+   `catalog.ts`, zero accuracy risk. Gated entirely on whether the RAM fits.
+
+   Predicted cost, from the model geometry: Qwen3-1.7B is 28 layers with 8 KV
+   heads at head_dim 128, so KV width is 1024 per half, and both halves are
+   `q8_0` on the Android CPU path (~1.06 bytes/element with the block scale):
+   `28 x 2 x 1024 x 1.06 ≈ 60.8 KB/token`, so 4096 → ~249 MB and 8192 → ~498 MB,
+   a delta of **~+250 MB**. Against ~2.3–2.4 GB current RSS, `minRamBytes` 6 GB
+   and an 8 GB target phone, that looks affordable — but "looks affordable" is
+   the kind of claim this campaign has been wrong about twice, so it is being
+   measured. What genuinely cannot be predicted is whether the larger KV moves
+   prefill throughput; if 8192 is slower per token it trades against the whole
+   point of the campaign.
+
+   Note the prefix KV snapshot does **not** scale with `n_ctx`:
+   `llama_kv_cache::state_write` skips empty cells, so the file is sized by the
+   ~1900 tokens actually stored, not by the cache geometry.
 2. **Stop shipping tool capability on 4096-context models.** A product decision.
 
 This also reframes roadmap Phase 1: its history target (1280 → ~2500 tokens)
