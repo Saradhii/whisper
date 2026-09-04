@@ -35,36 +35,21 @@ export type ModelSpec = {
 
 export const GB = 1024 ** 3;
 
+// Order is the order of the models screen, and the first card in the
+// open-by-default group is what a new user reads first. That slot has to belong
+// to a `tools: true` model: the onboarding screen promises "set alarms and
+// reminders, check your calendar", and only the agent loop delivers that —
+// app/index.tsx routes chat through runAgent ONLY when the active spec declares
+// tools. Gemma led this list for months with the word "Recommended.", so the
+// likely first-run path handed the user a model that answers "Done, alarm set
+// for 7am" without an alarm existing: no agent loop means no tool call, and
+// nothing in the plain chat path can stop a narrated action.
 export const CATALOG: ModelSpec[] = [
-  {
-    id: 'gemma-4-e2b-q4km',
-    name: 'Gemma 4 E2B · Q4_K_M',
-    description: 'Recommended. Multimodal (text + vision). Comfortable on 8 GB phones.',
-    engine: 'llama',
-    files: [
-      {
-        key: 'model',
-        url: 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf',
-        filename: 'gemma-4-e2b-q4km.gguf',
-      },
-      {
-        key: 'mmproj',
-        url: 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf',
-        filename: 'gemma-4-e2b-mmproj-f16.gguf',
-      },
-    ],
-    sizeBytes: 3.4 * GB,
-    minRamBytes: 6 * GB,
-    vision: true,
-    suggested: true,
-    nCtx: 2048,
-    stop: ['<end_of_turn>', '<eos>'],
-  },
   {
     id: 'qwen3-4b-instruct-q4km',
     name: 'Qwen3 4B Instruct',
     description:
-      'Best answer quality per GB in its class, and the strongest at phone actions (tools). Recommended for the assistant.',
+      'Recommended. Best answer quality per GB in its class, and the strongest at phone actions — alarms, reminders, calendar, web search.',
     engine: 'llama',
     files: [
       {
@@ -100,6 +85,37 @@ export const CATALOG: ModelSpec[] = [
     suggested: true,
     nCtx: 4096,
     stop: ['<|eot_id|>'],
+  },
+  {
+    id: 'gemma-4-e2b-q4km',
+    name: 'Gemma 4 E2B · Q4_K_M',
+    // Still suggested — it is the only model here that can see an image — but
+    // the description has to carry the trade. Its 2048-token window cannot hold
+    // the agent prompt (the 18-tool system message alone estimates ~2000 tokens
+    // against a TOOL_PROMPT_RESERVE of 2816), so it will never get
+    // `tools: true`; a user who picks it must know before the 3.4 GB download
+    // that this is the model that talks about actions instead of taking them.
+    description:
+      'Sees images — point the camera at something and ask. Chat and vision only: it cannot set alarms, check your calendar, or take any other action on the phone. Comfortable on 8 GB phones.',
+    engine: 'llama',
+    files: [
+      {
+        key: 'model',
+        url: 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/gemma-4-E2B-it-Q4_K_M.gguf',
+        filename: 'gemma-4-e2b-q4km.gguf',
+      },
+      {
+        key: 'mmproj',
+        url: 'https://huggingface.co/unsloth/gemma-4-E2B-it-GGUF/resolve/main/mmproj-F16.gguf',
+        filename: 'gemma-4-e2b-mmproj-f16.gguf',
+      },
+    ],
+    sizeBytes: 3.4 * GB,
+    minRamBytes: 6 * GB,
+    vision: true,
+    suggested: true,
+    nCtx: 2048,
+    stop: ['<end_of_turn>', '<eos>'],
   },
   {
     id: 'phi-4-mini-q4km',
@@ -183,7 +199,7 @@ export const CATALOG: ModelSpec[] = [
     id: 'gemma-4-e4b-q4km',
     name: 'Gemma 4 E4B · Q4_K_M',
     description:
-      'Bigger sibling. llama.cpp keeps all 8B raw params in RAM, so this needs a 12 GB+ device.',
+      'Bigger sibling, and the same chat-and-vision limits as E2B: no phone actions. llama.cpp keeps all 8B raw params in RAM, so this needs a 12 GB+ device.',
     engine: 'llama',
     files: [
       {

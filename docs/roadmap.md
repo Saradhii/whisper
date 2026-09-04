@@ -174,9 +174,14 @@ Paid-tier flagship. Fully local RAG on mobile is production-stable as of 2026.
 - Remote-updatable model catalog with signed manifests. Today the catalog is
   compiled in, so a dead Hugging Face URL bricks onboarding until a store release.
 - Device-aware onboarding that picks a model instead of showing a wall of GGUFs.
-  Must also resolve the current trap: **Gemma is the recommended default and
-  cannot run the agent** — no `tools: true`, and `nCtx: 2048` floors the history
-  budget at 512 tokens. Either fix it or say so in the UI.
+  The recommendation trap inside it is fixed (2026-09-05): Qwen3 4B leads the
+  catalog and carries the word "Recommended", Gemma stays suggested for vision
+  with a description that names what it cannot do, and the models screen prints
+  `· tools` / `· chat only` on every card. `src/models/catalog.test.ts` pins the
+  invariants. Gemma will never get `tools: true` — its 2048-token window is
+  smaller than `TOOL_PROMPT_RESERVE` (2816), and with `ctx_shift` pinned at
+  `n_keep: 0` the overflow would discard the system message, i.e. the tool
+  catalog itself.
 - Entitlement and paywall (one-time unlock, on-device receipt validation).
 - Local-only diagnostics; crash reporting that does not break the privacy claim.
 - Replace `Math.random()` conversation IDs.
@@ -192,8 +197,14 @@ the phases rather than blocking them.
 ## Known issues logged during the 2026-08-07 audit
 
 - `app/live.tsx` bypasses the agent entirely (Phase 2).
-- Gemma default cannot run tools; `nCtx: 2048` floors history at 512 (Phase 6).
+- ~~Gemma default cannot run tools; `nCtx: 2048` floors history at 512~~ — fixed
+  2026-09-05, see Phase 6.
 - Model catalog compiled into the binary (Phase 6).
 - No schema version field on any persisted store (Phase 1).
-- `Math.random()` conversation IDs (Phase 6).
+- `Math.random()` conversation IDs (Phase 6) — reviewed 2026-09-05 and judged
+  untidy, not a risk: `src/chat/store.ts` mints `c${ms36}${rand36}` only inside
+  `saveCurrent` on a human-initiated new chat, and the ids are device-local with
+  no sync, so a collision needs two conversations created in the same
+  millisecond on one phone. Left alone; changing the format touches persisted
+  keys for no user-visible gain.
 - Trace buffer has no export path (Phase 0 subsumes this).
