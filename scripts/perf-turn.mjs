@@ -54,7 +54,7 @@ const MODE = String(args.mode ?? 'drain');
 const SETTLE_MS = Number(args.settle ?? 3) * 1000;
 // Ops that build their own contexts (npredict/parity/ubatch) run for many
 // minutes; a turn is a couple of minutes at worst.
-const OP_TIMEOUT_MS = Number(args.timeout ?? 900_000);
+const OP_TIMEOUT_MS = Number(args.timeout ?? 3_600_000);
 
 const DEV_URL = `whisper://expo-development-client/?url=${encodeURIComponent(`http://10.0.2.2:${PORT}`)}`;
 
@@ -83,6 +83,13 @@ function startLog(path) {
   logPath = path;
   mkdirSync(dirname(path), { recursive: true });
   adb('logcat', '-c');
+  // Truncate SYNCHRONOUSLY. createWriteStream opens (and so truncates) on a
+  // later tick, so a resetCursor() immediately after this function would read
+  // the PREVIOUS run's file, set the cursor past its events, and then skip
+  // exactly that many events in the new file — silently losing the very first
+  // one, harness_ready, and hanging until timeout. It only ever bit on a re-run
+  // that reused a label, which is why single ops looked fine.
+  writeFileSync(path, '');
   const out = createWriteStream(path);
   logProc = spawn(
     'adb',
