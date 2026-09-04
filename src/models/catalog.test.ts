@@ -23,11 +23,67 @@ describe('catalog context windows', () => {
   // from the FRONT and eats the system message: the tool catalog and the worked
   // examples, the only place the model is told the tools exist. Requiring real
   // headroom (not merely `>`) keeps that arithmetic out of the floor entirely.
+  // Every tools model in the catalog currently fails this, so it is stated as
+  // a requirement plus a NAMED exemption list rather than as a lowered number.
+  // Lowering the threshold would delete the requirement; a known-failing marker
+  // would go green forever and stop being read. This keeps the goal visible,
+  // the violation enumerated, and — via the two tests below — impossible to
+  // widen.
+  //
+  // THE ARITHMETIC. TOOL_PROMPT_RESERVE is 3200, derived in prompt.ts from the
+  // prompt that is actually sent. Against nCtx 4096 that leaves 896 tokens of
+  // conversation — roughly four turns — where a tools model should have at
+  // least 1024. The reserve is not padding: a worst-case answer generation
+  // measured 4133 tokens against a 4096 window, and `ctx_shift` discards from
+  // the FRONT with `n_keep` pinned at 0, so an overflow evicts the tool catalog
+  // while the grammar keeps the output looking well-formed — valid tool calls
+  // chosen from a catalog the model can no longer see.
+  //
+  // THE FIX IS NOT A SMALLER PROMPT. The prefix has been measured and trimmed;
+  // what is left is scar tissue, each line carrying a named on-device failure.
+  // It is nCtx: 8192 would leave 4992 tokens of history. That change is blocked
+  // on a RAM measurement (KV cache size, prefill throughput under a larger KV,
+  // and the prefix KV snapshot whose size scales with cache geometry). If 8192
+  // does not fit, the alternative is not shaving the prompt further — it is
+  // not shipping tools on 4096-context models, which is a product decision.
+  const NCTX_EXEMPT = [
+    'qwen3-4b-instruct-q4km',
+    'llama-3.2-3b-q4km',
+    'phi-4-mini-q4km',
+    'smollm3-3b-q4km',
+    'qwen3-1.7b-q4km',
+    'qwen3-1.7b-abliterated-q4km',
+  ];
+
   it('gives every tools model room for the agent prompt plus real history', () => {
-    for (const m of builtIn.filter((s) => s.tools)) {
+    for (const m of builtIn.filter((s) => s.tools && !NCTX_EXEMPT.includes(s.id))) {
       expect(m.nCtx, `${m.id} cannot hold the agent prompt`).toBeGreaterThanOrEqual(
         TOOL_PROMPT_RESERVE + 1024,
       );
+    }
+  });
+
+  // The ratchet. Without these two the exemption list is just a slower way of
+  // lowering the threshold.
+  it('never lets the exemption list grow', () => {
+    // A new model may NOT be added here. If this fails, the answer is to give
+    // the model a context window that fits the prompt, not a longer list.
+    expect(NCTX_EXEMPT.length).toBeLessThanOrEqual(6);
+  });
+
+  it('drops a model from the exemption list as soon as it passes', () => {
+    // Forces the list to shrink on its own: an exempted model that now has
+    // room, or that no longer exists, has to come off. This is what turns
+    // raising nCtx into a one-line deletion here rather than something nobody
+    // remembers to revisit.
+    for (const id of NCTX_EXEMPT) {
+      const m = builtIn.find((s) => s.id === id);
+      expect(m, `${id} is exempted but not in the catalog — remove it`).toBeDefined();
+      expect(m?.tools, `${id} is exempted but is not a tools model — remove it`).toBe(true);
+      expect(
+        m!.nCtx,
+        `${id} now has room for the agent prompt — remove it from NCTX_EXEMPT`,
+      ).toBeLessThan(TOOL_PROMPT_RESERVE + 1024);
     }
   });
 

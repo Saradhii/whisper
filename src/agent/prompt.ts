@@ -34,16 +34,121 @@ import { renderExamples } from './examples';
 import type { AnyTool } from './types';
 
 /**
- * Context tokens the chat screen holds back for an agent turn, leaving the rest
- * for conversation history. It has to cover the whole of this module's output —
- * the system message (~1900 tokens with the full catalog, examples and date
- * table), the per-turn reference block, the trailing instruction, the decisions
- * and results the loop appends as it runs, and the bounded final answer.
- * Under-reserving doesn't fail loudly; it silently evicts
- * the user's own messages from the front of the history. prompt.test.ts pins
- * the system message against it.
+ * Everything an agent turn accumulates BETWEEN the reference block and the
+ * answer: the decisions the planner emits and the results the loop feeds back,
+ * plus their per-message template wrappers.
+ *
+ * A bound, not a measurement, because it depends on what the turn does. The
+ * figures are loop.ts's own: TURN_RESULT_TOKENS caps results at 320 tokens per
+ * turn, and its budget comment allows ~140 more for decisions and wrappers
+ * across four steps.
  */
-export const TOOL_PROMPT_RESERVE = 2816;
+const TOOL_TRAFFIC_TOKENS = 460;
+
+/** ANSWER_MAX_TOKENS in loop.ts — the generated reply the window must hold. */
+const ANSWER_TOKENS = 320;
+
+/** Headroom, so a small prompt edit does not silently start evicting history. */
+const RESERVE_MARGIN_TOKENS = 64;
+
+/**
+ * The same ~3.5 chars/token ruler historyBudget.ts budgets with.
+ *
+ * NOT promptSize.ts's calibrated 3.85. The reserve and the history budget
+ * partition one context window, so they must be measured with the same ruler
+ * or the split does not add up; and 3.5 over-states tokens against the 3.70
+ * measured for this prompt, which is the safe direction for a reserve — it
+ * holds back slightly too much rather than silently evicting the user.
+ */
+const estimate = (chars: number) => Math.ceil(chars / 3.5);
+
+/** The longest a turn's trailing band can be. A planning step ends with
+ *  planInstruction; the answer generation ends with answerNote plus the reply
+ *  itself, and that is always the larger of the two. */
+function trailingBandTokens(): number {
+  const answer = Math.max(
+    ...(
+      [
+        { ran: 0, acted: false, failed: [], denied: ['Set alarm 7:00'] },
+        { ran: 0, acted: false, failed: ['the calendar could not be read'], denied: [] },
+        { ran: 1, acted: true, failed: [], denied: [] },
+        { ran: 1, acted: false, failed: [], denied: [] },
+        { ran: 0, acted: false, failed: [], denied: [] },
+      ] as TurnOutcome[]
+    ).map((o) => estimate(answerNote(o).content.length)),
+  );
+  return answer + ANSWER_TOKENS;
+}
+
+/**
+ * Context tokens to hold back for an agent turn, DERIVED from the prompt that
+ * will actually be sent.
+ *
+ * This used to be a hand-tuned constant, and the problem with a constant is
+ * that nothing connects it to the thing it is meant to cover. It was set once
+ * against a system message that has grown every time a tool or a rule was
+ * added — and then the append-only layout moved the seven-day date table INTO
+ * that system message, so it grew again in a direction nobody re-measured. By
+ * then the static margin was under 100 tokens and the next tool would have
+ * failed the build with an assertion about a number, rather than the prompt
+ * simply costing what it costs. Deriving it also means every token trimmed out
+ * of the prefix turns into conversation history on its own, instead of waiting
+ * for someone to notice and edit a second constant.
+ *
+ * The bands are the ones loop.ts assembles, and the peak is the ANSWER
+ * generation — system + history + reference + everything the turn accumulated
+ * + the answer note + the reply. A planning step is strictly smaller, because
+ * planInstruction is one sentence where the answer band is a note plus 320
+ * generated tokens.
+ *
+ * Under-reserving does not fail loudly: it silently evicts the user's own
+ * messages from the front of the history, and `ctx_shift` discards from the
+ * FRONT, so an overflow eats the tool catalog while the grammar keeps the
+ * output looking well-formed.
+ */
+export function toolPromptReserve(tools: AnyTool[], now: Date = new Date()): number {
+  // A 300-character request, because turnReference slices the echoed request
+  // to exactly that and the reserve has to cover the longest one.
+  const reference = turnReference(now, 'x'.repeat(300));
+  return (
+    estimate(systemPrompt(tools, now).length) +
+    estimate(reference.content.length) +
+    TOOL_TRAFFIC_TOKENS +
+    trailingBandTokens() +
+    RESERVE_MARGIN_TOKENS
+  );
+}
+
+/**
+ * The ceiling the derived reserve must stay under. A RATCHET on the prefix:
+ * prompt.test.ts asserts the real reserve is below it, so growing the prompt
+ * past what the app reserves has to be a deliberate act rather than a silent
+ * eviction of the user's messages.
+ *
+ * RAISED from 2816 to 3200, and that is a bug fix rather than a concession.
+ * 2816 was hand-tuned against a system message that has since grown twice —
+ * once with each tool and rule added, and again when the append-only layout
+ * moved the seven-day date table INTO the system prefix. It was no longer
+ * covering the turn it was meant to cover. Measured on promptSize.ts's
+ * calibrated 3.85 ruler, which is the least conservative one available:
+ *
+ *   system + reference(300-char request) + answerNote, wrapped  2073 tok
+ *   + history 1280 (what 2816 leaves) + traffic 460 + generate 320
+ *   = 4133 against nCtx 4096 — an overflow of 37 tokens.
+ *
+ * That overflow is not soft. `ctx_shift` discards from the FRONT and llama.rn
+ * pins `n_keep` at 0, so the first thing evicted is the system prompt: the
+ * model goes on emitting well-formed tool calls, chosen by a grammar, from a
+ * catalog it can no longer see. loop.ts bounds tool results specifically to
+ * keep that unreachable, and a reserve that under-counts by 329 tokens walks
+ * straight back into it.
+ *
+ * The cost is real and belongs on the record: at nCtx 4096 this takes history
+ * from 1280 tokens to 951. That is the honest price of the current prefix, and
+ * it is the strongest argument for raising nCtx rather than for trimming more
+ * teaching out of the prompt.
+ */
+export const TOOL_PROMPT_RESERVE = 3200;
 
 /**
  * Each tool as name + description + argument list (`?` marks optional).
@@ -69,7 +174,10 @@ export function toolCatalog(tools: AnyTool[]): string {
           return v.description ? `${head} (${v.description})` : head;
         })
         .join(', ');
-      return `- ${t.name}: ${t.description} arguments: {${args}}`;
+      // `args:` not `arguments:`, and omitted entirely when a tool takes none.
+      // Pure rendering, no teaching removed: all 18 tools paid for that word
+      // and the three zero-argument tools were rendering a literal `{}`.
+      return args ? `- ${t.name}: ${t.description} args: {${args}}` : `- ${t.name}: ${t.description}`;
     })
     .join('\n');
 }
@@ -107,6 +215,23 @@ export function systemPrompt(tools: AnyTool[], now: Date): string {
     `   "Result of <name>: ...".`,
     `3. You emit {"respond": true}, and then you get to reply in plain words.`,
     ``,
+    // A note for the next token-trimming pass, because this block looks like
+    // the obvious place to save and three of these rules look like duplicates
+    // of a worked example below. They are not. Each is the GENERALISATION over
+    // its example: the chaining example is search_contacts→compose_sms, but the
+    // corpus also has contacts→dial_number and contacts→compose_email; the
+    // empty-result example is an empty calendar read, but web_search and
+    // search_phone_media come back empty too. Delete the rule and keep the
+    // example and you have kept the enumeration and thrown away the class —
+    // which is the same scope error as the pre-bd9a9c6 "do not search THE WEB
+    // for something you already know", the one the planner walked around by
+    // calling search_contacts instead.
+    //
+    // This was tried. Removing those three rules left the eval at 79/79 and
+    // all five `guarded` scenarios green, and it was still wrong. Replay
+    // scripts canned decisions, so the corpus cannot see a planner getting
+    // worse; the guards only pin the five specific strings they quote. Neither
+    // gate covers this block, so a green run is not permission to cut it.
     `Rules:`,
     `- Promising to do something does NOT do it. Only a tool call does.`,
     `- One call per request. Once a tool has returned, you have its answer —`,

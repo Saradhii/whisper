@@ -10,6 +10,7 @@ import {
   systemPrompt,
   TOOL_PROMPT_RESERVE,
   toolCatalog,
+  toolPromptReserve,
   turnReference,
 } from './prompt';
 import { TOOL_DEFS } from './toolDefs';
@@ -119,22 +120,32 @@ describe('worked examples', () => {
     expect(WORKED_EXAMPLES.some((ex) => ex.steps.length > 1)).toBe(true);
   });
 
-  it('leaves room for the rest of the turn inside the context reserve', () => {
+  it('keeps the derived reserve under its historical ceiling', () => {
     // Measured against the REAL registry, because the catalog grows every time
-    // a tool is added and it is most of the prompt. The rest of the turn has to
-    // fit alongside it: the per-turn reference block (clock, relative times,
-    // echoed request), the trailing instruction, the decisions and results the
-    // loop appends as it goes, and the capped final answer. Over-running does
-    // not fail loudly — it silently evicts the user's own messages from the
-    // front of the history.
-    const TURN_REFERENCE = 100;
-    const PLAN_INSTRUCTION = 60;
-    const TOOL_TRAFFIC = 250; // two decisions and their results
-    const ANSWER = 320; // ANSWER_MAX_TOKENS in loop.ts
-    const system = estimateTokens(systemPrompt(realTools, new Date()).length);
-    expect(
-      system + TURN_REFERENCE + PLAN_INSTRUCTION + TOOL_TRAFFIC + ANSWER,
-    ).toBeLessThan(TOOL_PROMPT_RESERVE);
+    // a tool is added and it is most of the prompt. The reserve now DERIVES
+    // itself from that prompt (see toolPromptReserve), so this is no longer
+    // "does the hand-tuned number still fit" — it is a ratchet on the prefix.
+    // A prompt edit that pushes the reserve past what the app used to reserve
+    // statically has taken conversation history away from the user, and should
+    // have to be a deliberate act.
+    //
+    // If this fails: shrink the prefix, or raise the ceiling ONLY with a
+    // decision recorded about the history the user loses in exchange.
+    expect(toolPromptReserve(realTools, new Date())).toBeLessThanOrEqual(
+      TOOL_PROMPT_RESERVE,
+    );
+  });
+
+  it('spends the reserve on the prompt rather than on slack', () => {
+    // The other direction, and why the ceiling is a ratchet and not a target:
+    // a reserve far BELOW it means the app holds back context it does not need
+    // and trims the user's messages for nothing. nCtx - reserve is the
+    // conversation the user actually gets to keep.
+    const reserve = toolPromptReserve(realTools, new Date());
+    expect(reserve).toBeGreaterThan(
+      estimateTokens(systemPrompt(realTools, new Date()).length),
+    );
+    expect(TOOL_PROMPT_RESERVE - reserve).toBeLessThan(400);
   });
 });
 

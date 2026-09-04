@@ -33,7 +33,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { parseDecision } from '@/src/agent/grammar';
 import { runAgent, type AgentEvent } from '@/src/agent/loop';
-import { agentPrefix, localDate, TOOL_PROMPT_RESERVE } from '@/src/agent/prompt';
+import { agentPrefix, localDate, toolPromptReserve } from '@/src/agent/prompt';
 import { TOOLS } from '@/src/agent/tools';
 import * as Trace from '@/src/agent/trace';
 import Composer from '@/src/chat/Composer';
@@ -96,7 +96,14 @@ const chatSystemPrompt = (now: Date, personaExtra: string) =>
 // catalog, the worked examples, and the decisions and results the loop appends
 // as it goes — so its reserve is owned by the prompt module that produces it.
 const historyBudget = (nCtx: number, tools: boolean, maxTokens: number) =>
-  Math.max(512, nCtx - (tools ? TOOL_PROMPT_RESERVE : Math.max(768, maxTokens + 256)));
+  // The agent reserve is MEASURED from the prompt that will actually be sent,
+  // not carried as a constant somebody has to remember to update when a tool
+  // or a rule is added — or when a layout change moves the date table into the
+  // system message, as the append-only pass did.
+  Math.max(
+    512,
+    nCtx - (tools ? toolPromptReserve(TOOLS) : Math.max(768, maxTokens + 256)),
+  );
 
 // First-chat suggestions: make capabilities discoverable — nothing else in the
 // UI tells the user the assistant can touch alarms, calendar, or the web.
