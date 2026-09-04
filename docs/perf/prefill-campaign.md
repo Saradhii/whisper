@@ -302,11 +302,8 @@ campaign's real claim needs one run on the physical test phone.
    largest single item.
 2. **Prefix KV persisted to disk.** Removes cold start as a separate case.
    Shipped in `2eba7ed`, unverified on device.
-3. **A3, collapse the plan and answer generations** (`grammar_lazy`). This is
-   the one that moves TTFT rather than total duration: on a turn needing no
-   tool, the model would begin streaming the answer immediately instead of after
-   a complete planning generation. Conversational turns are the majority, so
-   this is the biggest perceived-speed change available.
+3. ~~A3, collapse the plan and answer generations (`grammar_lazy`).~~
+   **REJECTED 2026-09-05 — see below.**
 4. Everything else — parity padding, ubatch, thread splits — is a multiplier on
    an already-small number and should be measured, not assumed.
 
@@ -317,3 +314,34 @@ changes that produce most of the speed cannot be shown safe by it. The
 host-side real-model harness is the gate; a fast assistant that picks the wrong
 tool is not usable, and this project's own worst shipped bug was narrating an
 action instead of performing it.
+
+## Rejected: collapsing the plan and answer generations (A3)
+
+The mechanism works — `grammar_lazy` plus `grammar_triggers` leaves logits
+untouched while awaiting a trigger and retroactively replays buffered tokens
+into the grammar on a match, and a source audit confirmed the exact param shape.
+It was queued as the largest time-to-first-token win, because a no-tool turn
+would start streaming immediately instead of after a whole planning generation.
+
+**It is rejected because it trades away the property that keeps the agent
+honest.** Today the planning generation is grammar-CONSTRAINED: the model must
+emit `{"tool": ...}` or `{"respond": true}`, and it cannot narrate. Under a lazy
+grammar the model is UNCONSTRAINED until it emits the trigger — so asked to set
+an alarm it may simply answer "Sure, I'll set that for you at 7" and never emit
+the trigger at all. That is narrate-instead-of-act, this project's worst shipped
+bug, reintroduced at the mechanism level, failing silently, on every turn rather
+than on a filtered subset.
+
+It is the same risk-inversion argument that keeps `fastPath.ts` a closed
+allowlist rather than a tool-keyword blocklist, and it applies with more force
+here because the fast path is opt-in per message and this would not be.
+
+**And it is not needed.** After A1, a warm turn's plan prefill is the delta only
+(the user's message plus a short trailing instruction), plan decode is five
+tokens, and the answer generation then EXTENDS the same prefix so its prefill is
+roughly just `answerNote`. That is on the order of 2.5s TTFT on the AVD and
+comfortably under a second on a phone — which meets the targets above without
+touching the constraint.
+
+Revisit only if A1 lands and measurably fails to reach the TTFT target, and even
+then prefer any design that keeps a forced structured decision.
