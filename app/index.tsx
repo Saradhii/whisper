@@ -48,6 +48,7 @@ import { useVoiceInput } from '@/src/voice/useVoiceInput';
 import { splitThinking } from '@/src/chat/thinking';
 import { estimateTokens, trimToBudget, type CountedMessage } from '@/src/chat/historyBudget';
 import * as ChatStore from '@/src/chat/store';
+import { usePerfHarness } from '@/src/dev/perfHarness';
 import { engineFor, unloadAll, type ChatMessage, type Engine } from '@/src/engines';
 import { humanizeLoadError } from '@/src/models/loadErrors';
 import * as ModelManager from '@/src/models/ModelManager';
@@ -404,6 +405,15 @@ export default function Chat() {
   };
 
   const send = () => void sendText(input.trim(), image ?? undefined);
+
+  // Dev-only: lets a shell script drive one real turn over a deep link and read
+  // structured timings back, instead of a human tapping the composer. The hook
+  // only observes — see src/dev/perfHarness.ts. `__DEV__` is a compile-time
+  // constant, so a release build drops this entirely.
+  if (__DEV__) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- __DEV__ is constant
+    usePerfHarness({ sendText: (t: string) => sendText(t), ready, busy });
+  }
 
   // Drop the trailing assistant turn(s) and answer the last user message again.
   const regenerate = () => {
