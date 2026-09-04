@@ -478,6 +478,9 @@ Two honest caveats:
    no-tool turns, which still pay a full planning generation. A1 cannot close
    it. **Widening the fast path is the remaining work**, and it is gated on a
    real-model harness because the corpus cannot see the difference.
+   *Partly closed since, without widening the fast path — see "Landed: the
+   relative-times block is conditional" at the end of this document. 0.79s of
+   the 1.1s, by not rendering clock arithmetic to turns that cannot use it.*
 
 ---
 
@@ -638,3 +641,125 @@ expensive if they had been built on.
 - **A green suite is not permission.** Three prompt rules were removed, the eval
   stayed 79/79, every guard stayed green, and the removal was still wrong. The
   corpus replays scripted responses; it cannot see what a real model would do.
+
+---
+
+## Landed: the relative-times block is conditional
+
+`turnReference` carried a 212-character fenced block on every planning turn —
+`Use ONLY if I say "in N minutes/hours": in 30 minutes it is 13:39, in an hour
+14:09, in three hours 16:09. If I name a time instead ("at 10pm", "at 7:30"),
+use exactly that, with minute 0 unless I said a minute.` It is now rendered only
+when the request could name a time (`mentionsTime()` in `prompt.ts`).
+
+### The verified decomposition it was aimed at
+
+The ~4.1s figure above was quoted without a breakdown twice. Rendered, for
+"What's the capital of France?" against the real 18-tool catalog, with the
+system prefix prewarmed:
+
+| | before | after |
+|---|---|---|
+| plan prefill (turn 2 of a conversation) | 555c ≈ 144 tok ≈ 2.06s | 342c ≈ 89 tok ≈ 1.27s |
+| plan decode (5 tokens @ 16 t/s) | 0.31s | 0.31s |
+| answer prefill (`answerNote`) | 307c ≈ 80 tok ≈ 1.14s | unchanged |
+| **TTFT** | **3.51s** | **2.73s** ✓ |
+| same, first turn after a cold start (history uncached) | 3.96s | 3.17s ✗ |
+
+Derived, not measured: characters ÷ 3.85 ÷ 70 tok/s. **212 characters ≈ 55
+estimated tokens ≈ 0.79s**, and it is the same 0.79s in both framings because it
+is one message removed from one generation. The `< 3.0s` AVD target is cleared
+mid-conversation and missed by 0.17s on the first turn of a session — which is
+the turn the prefix KV snapshot exists to fix, and it has not been verified on
+device.
+
+**It returns ZERO tokens to the history budget, and that is correct.**
+`toolPromptReserve()` must cover the reference block at its longest, which is
+still the block-present rendering, so the derived reserve is 3146 before and
+after. A reserve that varied with the request would resize the history from turn
+to turn and re-prefill the whole conversation each time — far more than 55
+tokens. (The reserve's own worst-case probe was changed from 300 `x`s to a
+request opening with a digit; without that it would have measured the shortened
+block and silently under-reserved by 61 tokens.)
+
+### Why this cannot become narrate-instead-of-act
+
+The claim is not "this request needs no tool" — that is the fast path's claim,
+and it is refused as a blocklist for good reason. The claim here is "this
+request contains no expression of TIME", and the two are not comparable:
+
+- **The surface is closed where an intent is open.** "I need to be up at 5" is
+  an alarm request with no tool word in it, which is why `fastPath.ts` is an
+  allowlist. But it names a time, and every phrasing that names one either
+  writes a digit, writes am/pm, or uses one of a small set of words
+  (noon, midnight, o'clock, half, quarter, an hour, a bit, tonight).
+- **The prompt already says so.** The block is fenced `Use ONLY if I say "in N
+  minutes/hours"`. Omitting it when no such phrase appears removes text the
+  model has been instructed to ignore.
+- **The failure is LOUD.** The block exists to fill an `hour`/`minute` argument.
+  The only three tools that take one — `set_alarm`, `schedule_reminder`,
+  `create_calendar_event` — all set `requiresConfirmation: true` and render the
+  computed time into the card the user must tap ("Set alarm 13:09"). A word the
+  vocabulary misses therefore degrades to a wrong time the user is *shown before
+  anything happens*, not to the silent lie a false skip would be. No tool that
+  consumes this block can run unseen.
+- **Two independent triggers.** A miss needs both to fail: the time vocabulary,
+  and the vocabulary of asking this phone to schedule something. "Remind me in a
+  jiffy" keeps the block on the word "remind".
+- **It removes a known hazard as well as tokens.** The block has its own
+  observed failure when present and irrelevant: unfenced, "in an hour 22:59"
+  turned "remind me at 10pm" into 10:59 PM. Not rendering it where it cannot
+  apply is one fewer clock time in the prompt to copy the wrong one out of.
+
+`mentionsTime.test.ts` is the specification, built the same way
+`fastPath.test.ts` is: **zero false omissions across every corpus turn whose
+expected call takes an hour or a minute** — 21 of them today. The set of such
+tools is derived from `TOOL_DEFS` by looking for an `hour`/`minute` property, so
+a new tool joins the property instead of escaping it.
+
+Scored over the corpus: 21/21 clock-bearing turns keep the block; 10 of 18
+no-tool turns drop it (the saving); the 8 that keep it are greetings and
+"what time is it", all in the safe direction. 22 tool turns drop it — contacts,
+battery, clipboard, maps, media, URLs — and none of those tools takes a time.
+
+Eval unchanged: 78 scenarios / 79 turns, 100%, mean 1.82 steps, 0 drift. **Still
+unverified behaviourally** — the corpus replays scripted responses and cannot
+say whether a real Qwen3-1.7B still gets "wake me in an hour" right. That needs
+the host-side GGUF harness.
+
+### Rejected here too: the cheap constrained probe
+
+A single-token `root ::= "T" | "C"` generation replacing the planning
+generation. Its own sketch said it only pays if the probe prompt is dramatically
+shorter than the planning prompt AND reuses the same cached prefix. **Those two
+requirements are mutually exclusive on this engine.** `LlamaEngine` holds one
+module-level context, `n_parallel: 1`, and reuse is a plain longest-common-token
+prefix followed by `llama_memory_seq_rm`. A short probe prompt therefore does
+not share the prefix — it *evicts* it, and the answer generation behind it
+re-prefills the whole ~2000-token system message: ~29s at 70 tok/s.
+
+Constrained to share the prefix, the probe's prompt is the planning prompt with
+a different trailing sentence, and the arithmetic is: it saves the difference
+between `planInstruction` (98 wrapped characters on the first step) and a
+shorter probe instruction, plus four tokens of decode. **Best case ~0.35s, on
+no-tool turns only, and it adds a whole extra generation to every tool turn.**
+It buys under half of what the conditional block buys, and it buys it by
+putting a classifier in front of the grammar — which is narrate-instead-of-act
+with an extra step.
+
+### Widening `skipsPlanning` — still not done, and here is the evidence needed
+
+Not attempted, and no flag was added, because the flag would have nothing behind
+it. The remaining no-tool class is knowledge questions, and the second failure
+mode there is worse than a slow turn: "what's on my calendar", "when is my
+meeting", "what's my battery at" all look like questions answerable from
+knowledge and are not, so a skip answers from the model's imagination about the
+user's private data. There is no closed vocabulary that separates "how long to
+boil eggs" from "when is my meeting" — both are `<wh-word> <common words>`.
+
+What would justify turning such a flag on: the host-side GGUF harness scoring a
+candidate gate over the whole corpus **plus** an adversarial set of possessive
+questions ("my", "our", "mine" + every noun the tool catalog can reach), with
+zero skips on any of them, and a measured false-skip rate of zero across at
+least a few hundred real user messages. Until that exists the honest position is
+that this gap closes by making the planning turn cheaper, not by skipping it.
