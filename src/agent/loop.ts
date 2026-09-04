@@ -46,11 +46,22 @@ const MAX_CALLS_PER_TOOL = 2;
  * which is more than the whole turn has to spend.
  *
  * The arithmetic, at a planning step, is:
- *   system(1804) + history(1280) + turnReference(~95) + accumulated
+ *   system(~1825) + history(951) + turnReference(~95) + accumulated
  *     + planInstruction(~40) + generate(256)
- * against nCtx 4096, leaving ~620 tokens for everything the turn accumulates.
+ * against nCtx 4096, leaving ~929 tokens for everything the turn accumulates.
  * Decisions and per-message template overhead take ~140 of that across four
  * steps, so the results themselves get ~320.
+ *
+ * BOTH INPUTS MOVED after this was first written, in opposite directions: the
+ * system message grew when the date table came in (1804 -> ~1825), and the
+ * history shrank when TOOL_PROMPT_RESERVE stopped being a hand-tuned constant
+ * and started being derived from the prompt (1280 -> 951, reserve 3200). The
+ * slack is ~929 where this comment used to claim ~620 — so the 320 below is
+ * MORE conservative than the arithmetic requires, not less.
+ *
+ * That direction matters if you are reading this in order to tune it: a margin
+ * that looks generous against the old numbers is not evidence it can be spent.
+ * Re-derive from toolPromptReserve() before changing anything here.
  *
  * Overflowing is not a soft failure. `ctx_shift` discards from the FRONT and
  * llama.rn does not expose `n_keep`, so the first thing evicted is the system

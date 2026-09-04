@@ -280,10 +280,13 @@ export function systemPrompt(tools: AnyTool[], now: Date): string {
  * will not match, and the failure is silent — the turn is simply as slow as it
  * always was, with nothing to show that the optimization stopped working.
  *
- * That contract now covers the date table too. Warming this prefix costs ~1804
- * prompt tokens and ~28 seconds of wall clock on the test AVD; anything moved
- * INTO it is warmed for free, and anything that renders differently here than
- * it does in the turn throws all 28 seconds away without saying so.
+ * That contract now covers the date table too. Warming this prefix costs ~1825
+ * prompt tokens (7026 characters) and roughly half a minute of wall clock on
+ * the test AVD; anything moved INTO it is warmed for free, and anything that
+ * renders differently here than it does in the turn throws all of that away
+ * without saying so. The "~1804 tokens / 28s" pair quoted here before was
+ * measured BEFORE the date table moved in — re-measure with promptSize.ts
+ * rather than trusting a number in a comment, this one included.
  */
 export function agentPrefix(tools: AnyTool[], now: Date = new Date()): AgentMessage[] {
   return [{ role: 'system', content: systemPrompt(tools, now) }];
@@ -297,7 +300,9 @@ export function agentPrefix(tools: AnyTool[], now: Date = new Date()): AgentMess
  * turn runs. That position is chosen deliberately and both halves of it matter:
  *
  *   * after the history, not before it, because the history is the LARGEST
- *     stable region in the prompt (up to 1280 tokens — see historyBudget.ts).
+ *     stable region in the prompt (up to `nCtx - toolPromptReserve()` tokens —
+ *     951 at nCtx 4096 today, and 1280 before the reserve stopped being a
+ *     hand-tuned constant; see historyBudget.ts).
  *     A clock rendered ahead of it would move every byte of it on every turn
  *     and force a full re-prefill of the conversation, which is a far bigger
  *     loss than anything this reorganisation wins back.
@@ -523,15 +528,48 @@ function relativeTimes(now: Date): string {
  */
 function dateAnchors(now: Date): string {
   const days = [0, 1, 2, 3, 4, 5, 6].map((i) => {
-    const d = new Date(+now + i * 86_400_000);
+    const d = addDays(now, i);
     const name = d.toLocaleDateString(undefined, { weekday: 'long' });
     const tag = i === 0 ? 'today' : i === 1 ? 'tomorrow' : name;
     return `${tag} ${localDate(d)}`;
   });
   return (
     `${days.join(', ')}. ` +
-    `This week means ${localDate(now)} to ${localDate(new Date(+now + 6 * 86_400_000))}.`
+    `This week means ${localDate(now)} to ${localDate(addDays(now, 6))}.`
   );
+}
+
+/**
+ * N calendar days after `d`, in the phone's own timezone.
+ *
+ * By DATE COMPONENT, never by adding 86_400_000 milliseconds. A day is not
+ * always 24 hours: on a daylight-saving fall-back it is 25, and the millisecond
+ * version quietly walked backwards across the boundary. Rendered from
+ * 2026-11-01T00:30 in America/New_York it produced
+ *
+ *     today 2026-11-01, tomorrow 2026-11-01, Monday 2026-11-02, ...
+ *     This week means 2026-11-01 to 2026-11-06
+ *
+ * — "tomorrow" equal to today, Sunday missing, and a six-day week, in the one
+ * table the prompt orders the model to COPY dates from rather than work them
+ * out. "Remind me tomorrow at 9am" would have been scheduled for today. The
+ * model would have been obeying its instructions exactly, which is what makes
+ * this worse than the arithmetic failures the table exists to prevent: there is
+ * no wrong reasoning to catch, only a wrong table.
+ *
+ * It survived because it needs BOTH a DST timezone AND a render in the hour
+ * after midnight. India, where this is developed and tested, has no DST.
+ *
+ * The midday pin is what makes it robust rather than merely better: setting the
+ * hour to 12 before adding days puts the result twelve hours from either
+ * boundary, so no transition in any timezone can push it onto an adjacent date.
+ * `setDate` past the end of a month rolls over on its own.
+ */
+function addDays(d: Date, days: number): Date {
+  const out = new Date(d);
+  out.setHours(12, 0, 0, 0);
+  out.setDate(out.getDate() + days);
+  return out;
 }
 
 const pad = (n: number) => String(n).padStart(2, '0');

@@ -278,6 +278,18 @@ describe('the turn is append-only', () => {
       lines.push(`  ${label.padEnd(36)}${formatSize(text.length)}`);
     }
     console.log([...lines, ''].join('\n'));
+    // Deliberately not an assertion. This block is a REPORTING device — it
+    // prints the table the restructure is judged by, the way corpus.test.ts
+    // prints its score table, so the numbers are readable without having to
+    // break something to see them. The real ratchets are the other tests in
+    // this file: the append-only property, the plan/answer prefix sharing, the
+    // legacy comparison, and the tail-size bound.
+    //
+    // Two things follow. Do NOT "fix" this into an assertion on the printed
+    // figures — they move with every legitimate prompt edit and would redden
+    // the build for no defect. And do not read the table as verified: nothing
+    // here fails if those numbers regress, so a regression surfaces as a worse
+    // number somebody has to notice, not as a failing test.
     expect(true).toBe(true);
   });
 

@@ -87,9 +87,13 @@ export interface Engine {
    * This exists because the agent's cost is almost entirely PREFILL, and the
    * whole of it used to land on the user's first message: measured on the test
    * AVD, turn one evaluated 2333 prompt tokens at 63 tok/s — 37.2 of the 41.2
-   * second turn — to emit a five-token decision. The ~1736-token system
-   * message (tool catalog + worked examples) is known the moment the model
-   * loads, so there is no reason for a person to wait for it.
+   * second turn — to emit a five-token decision. The system message — 7026
+   * characters, ~1825 tokens: tool catalog, worked examples and the seven-day
+   * date table — is known the moment the model loads, so there is no reason
+   * for a person to wait for it. (This read "~1736 tokens of tool catalog and
+   * worked examples" until the append-only pass moved the date table in.
+   * Measure with promptSize.ts rather than quoting a comment, this one
+   * included.)
    *
    * Best-effort by contract: a failure here must never surface to the user or
    * block a turn, because nothing is wrong if it doesn't run — the next
