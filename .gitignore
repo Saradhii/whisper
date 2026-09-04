@@ -1,5 +1,8 @@
 # dependencies
 node_modules/
+# ...and as a bare symlink: agent worktrees link it in, and the trailing
+# slash above does not match a symlink, so one got committed once.
+node_modules
 
 # Expo
 .expo/
