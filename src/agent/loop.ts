@@ -46,9 +46,9 @@ const MAX_CALLS_PER_TOOL = 2;
  * which is more than the whole turn has to spend.
  *
  * The arithmetic, at a planning step, is:
- *   system(1804) + history(1280) + turnReference(~70) + accumulated
- *     + planInstruction(~45) + generate(256)
- * against nCtx 4096, leaving ~640 tokens for everything the turn accumulates.
+ *   system(1804) + history(1280) + turnReference(~95) + accumulated
+ *     + planInstruction(~40) + generate(256)
+ * against nCtx 4096, leaving ~620 tokens for everything the turn accumulates.
  * Decisions and per-message template overhead take ~140 of that across four
  * steps, so the results themselves get ~320.
  *
@@ -189,21 +189,26 @@ function timingLabel(t?: GenerateTimings): string {
  * that: it names how many characters are new and how many whole messages the
  * prompt still shares with the last one.
  *
+ * Module state, not turn state, and deliberately: the KV cache does not reset
+ * between turns either, so the first generation of turn 2 is measured against
+ * what turn 1 left behind. Scoping this to one `runAgent` call would report
+ * that generation as rebuilding the whole prompt, which is the exact mistake
+ * this exists to stop people making.
+ *
  * Rendered only while the developer trace is recording, because it stringifies
  * the entire prompt.
  */
-function tailTracker() {
-  let last: AgentMessage[] = [];
-  return (prompt: AgentMessage[]): string => {
-    const prev = last;
-    last = prompt;
-    if (!Trace.isEnabled()) return '';
-    const d = divergence(prev, prompt);
-    return (
-      ` [new ${d.reEvaluatedChars}c of ${promptSize(prompt).chars}c` +
-      ` | shares ${d.sharedMessages}/${prompt.length} msgs]`
-    );
-  };
+let lastPrompt: AgentMessage[] = [];
+
+function tailLabel(prompt: AgentMessage[]): string {
+  const prev = lastPrompt;
+  lastPrompt = prompt;
+  if (!Trace.isEnabled()) return '';
+  const d = divergence(prev, prompt);
+  return (
+    ` [new ${d.reEvaluatedChars}c of ${promptSize(prompt).chars}c` +
+    ` | shares ${d.sharedMessages}/${prompt.length} msgs]`
+  );
 }
 
 export async function runAgent(
@@ -269,16 +274,15 @@ export async function runAgent(
 
   // Timings of the most recent generation, folded into its trace row.
   let planTimings: GenerateTimings | undefined;
-  // How much of that generation's prompt was new, in characters. Reset per
-  // turn, because the previous turn's prompt is what the cache is holding.
-  const tail = tailTracker();
+  // How much of that generation's prompt was new, in characters — see
+  // tailLabel, which carries across turns because the cache does.
   let planTail = '';
 
   /** One grammar-constrained planning turn. */
   const plan = async (g: string) => {
     const started = Date.now();
     const prompt = [...messages, planInstruction(called)];
-    planTail = tail(prompt);
+    planTail = tailLabel(prompt);
     const res = await engine.generate(prompt, () => {}, {
       grammar: g,
       disableThinking: true,
@@ -485,13 +489,19 @@ export async function runAgent(
     Recorder.abandon();
     return;
   }
-  // The answer prompt is the last planning prompt with its trailing instruction
-  // swapped for this one — same system prefix, same reference block, same
-  // decisions and results, in the same order. That is what makes the answer
-  // phase cost its own note and nothing else: measured warm, it re-evaluates
-  // ~335 characters where the plan phase before it built ~2000.
+  // Usually the answer prompt is the last planning prompt with its trailing
+  // instruction swapped for this one — same prefix, same reference block, same
+  // decisions and results, in the same order — so it re-evaluates 340 warm
+  // characters and nothing else.
+  //
+  // The exception is a turn that ended WITHOUT a final {"respond": true}:
+  // repeat suppression returned 'exhausted', or MAX_STEPS ran out. Then a
+  // decision and a result sit where the planning prompt had its instruction,
+  // and those get evaluated here instead. That is not waste — they are new
+  // either way — but it is why a cache log can show the answer phase diverging
+  // early and it does not mean a prefix was thrown away.
   messages.push(answerNote({ ran, acted, failed: failures, denied: denials }));
-  const answerTail = tail(messages);
+  const answerTail = tailLabel(messages);
   const started = Date.now();
   let streamed = '';
   const res = await engine.generate(
