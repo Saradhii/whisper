@@ -22,6 +22,7 @@
 //
 //   npm run eval:real                            score and gate
 //   WHISPER_EVAL_ABLATION=dates npm run eval:real   prove the gate can fail
+//   WHISPER_EVAL_LAYOUT=legacy npm run eval:real  score the PRE-A1 prompt layout
 //   WHISPER_EVAL_REPEATS=3 npm run eval:real     measure run-to-run variance
 //   WHISPER_EVAL_ONLY=dates npm run eval:real    one tag, for a fast loop
 //   WHISPER_EVAL_UPDATE_BASELINE=1 npm run eval:real   re-record the ratchet
@@ -33,7 +34,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { scoreAll } from '../run';
 import { ALL_SCENARIOS } from '../scenarios';
 import type { Scenario, ScoreReport } from '../types';
-import { realEngine, ABLATIONS, type Ablation } from './engine';
+import { realEngine } from './engine';
+import { ABLATIONS, LAYOUTS, type Ablation, type Layout } from './layout';
 import { availability, loadRealModel, MODEL_PATH, type RealModel } from './model';
 import {
   compare,
@@ -52,6 +54,7 @@ import {
 const BASELINE_PATH = path.join(process.cwd(), 'src/agent/eval/real/baseline.json');
 
 const ABLATION = (process.env.WHISPER_EVAL_ABLATION ?? 'none') as Ablation;
+const LAYOUT = (process.env.WHISPER_EVAL_LAYOUT ?? 'current') as Layout;
 const REPEATS = Math.max(1, Number(process.env.WHISPER_EVAL_REPEATS ?? 1));
 const SEED = Number(process.env.WHISPER_EVAL_SEED ?? 1);
 const ONLY = process.env.WHISPER_EVAL_ONLY ?? '';
@@ -92,6 +95,9 @@ describe.skipIf(!check.ok)('agent eval corpus — real model', () => {
         `WHISPER_EVAL_ABLATION=${ABLATION} is not one of: ${ABLATIONS.join(', ')}`,
       );
     }
+    if (!LAYOUTS.includes(LAYOUT)) {
+      throw new Error(`WHISPER_EVAL_LAYOUT=${LAYOUT} is not one of: ${LAYOUTS.join(', ')}`);
+    }
     const scenarios = corpus();
     expect(scenarios.length).toBeGreaterThan(0);
 
@@ -102,7 +108,7 @@ describe.skipIf(!check.ok)('agent eval corpus — real model', () => {
       const seed = SEED + r;
       const started = Date.now();
       const report = await scoreAll(scenarios, () =>
-        realEngine(model, { ablation: ABLATION, seed }),
+        realEngine(model, { ablation: ABLATION, layout: LAYOUT, seed }),
       );
       const summary = summarize(report, scenarios);
       runs.push(summary);
@@ -112,6 +118,7 @@ describe.skipIf(!check.ok)('agent eval corpus — real model', () => {
           model: path.basename(MODEL_PATH),
           backend: model.backend,
           ablation: ABLATION,
+          layout: LAYOUT,
           seed,
           ms: Date.now() - started,
         }),
@@ -128,7 +135,8 @@ describe.skipIf(!check.ok)('agent eval corpus — real model', () => {
 
     if (UPDATE) {
       if (ONLY) throw new Error('refusing to record a baseline from a filtered run (WHISPER_EVAL_ONLY is set)');
-      if (ABLATION !== 'none') throw new Error('refusing to record a baseline from an ablated run');
+      if (ABLATION !== 'none' || LAYOUT !== 'current')
+        throw new Error('refusing to record a baseline from an ablated or re-laid-out run');
       writeBaseline(summary);
       console.log(`  baseline written to ${BASELINE_PATH}\n`);
       return;
@@ -142,12 +150,12 @@ describe.skipIf(!check.ok)('agent eval corpus — real model', () => {
       return;
     }
 
-    if (ABLATION !== 'none' || ONLY) {
+    if (ABLATION !== 'none' || LAYOUT !== 'current' || ONLY) {
       // An ablated or filtered run is an EXPERIMENT, not a gate: it is supposed
       // to score worse, and failing the build for that would make the one
       // command that proves this harness works also the one that breaks CI.
       // Print the delta, which is the whole artifact of such a run.
-      console.log(delta(baseline, summary, ABLATION, ONLY));
+      console.log(delta(baseline, summary, `${ABLATION}/${LAYOUT}`, ONLY));
       return;
     }
 

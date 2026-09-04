@@ -13,70 +13,13 @@
 import type { AgentMessage, Engine, GenerateResult } from '@/src/engines/types';
 
 import type { FixtureEngine } from '../engine';
+import { ablate, applyLayout, type Ablation, type Layout } from './layout';
 import type { RealModel } from './model';
-
-/**
- * A deliberate mutilation of the prompt, applied on the way to the model.
- *
- * This exists because of a standard this project set for itself: a harness that
- * cannot reproduce a known bug is not yet a gate. The date table in
- * `planNote()` was added to fix a specific, documented class of failure — "in an
- * hour" at 13:09 coming back as 13:09, "6pm today" as 16:00, "Friday at 1pm"
- * landing on Monday noon. If removing it does NOT move the score, then the score
- * is not sensitive to the thing the corpus most needs to protect, and no green
- * run from it means anything.
- *
- * It is applied HERE, at the engine boundary, and not by editing `prompt.ts`:
- * the ablation must be a property of one eval run, not a diff someone can
- * forget to revert. The app's runtime code is never touched.
- */
-export type Ablation =
-  /** Ship exactly what `prompt.ts` renders. */
-  | 'none'
-  /** Drop the seven-day date list and the "this week means" span, keeping the
-   *  wall clock and the relative-time lines. Isolates the date TABLE. */
-  | 'dates'
-  /** Drop the entire reference block after the clock — date table and
-   *  relative-time anchors both. The full "no lookup table" condition. */
-  | 'anchors';
-
-export const ABLATIONS: Ablation[] = ['none', 'dates', 'anchors'];
-
-// Landmarks copied from `anchors()` / `planNote()` in src/agent/prompt.ts.
-// Deliberately plain string search, never a regex: an ablation that silently
-// matched nothing would report "removing the date table changed no scores",
-// which is the single most misleading result this harness could produce. So a
-// miss is loud — see `ablate()`.
-const TABLE_START = 'Dates: ';
-const RELATIVE_START = 'Use ONLY if I say';
-const BLOCK_END = ']';
-
-/**
- * Cut the requested section out of a plan note.
- *
- * Returns `null` when the message is not a plan note (the system message, the
- * user's own turn, a tool result), so the caller can tell "nothing to do here"
- * apart from "the landmark moved".
- */
-export function ablate(content: string, mode: Ablation): string | null {
-  if (mode === 'none') return null;
-  const start = content.indexOf(TABLE_START);
-  if (start < 0) return null;
-  const end =
-    mode === 'dates' ? content.indexOf(RELATIVE_START, start) : content.indexOf(BLOCK_END, start);
-  if (end < 0) {
-    throw new Error(
-      `ablation "${mode}" found ${JSON.stringify(TABLE_START)} but not its end marker ` +
-        `${JSON.stringify(mode === 'dates' ? RELATIVE_START : BLOCK_END)}. planNote() has been ` +
-        `reworded — update the landmarks in src/agent/eval/real/engine.ts, because an ` +
-        `ablation that quietly removes nothing would report a regression test as passing.`,
-    );
-  }
-  return content.slice(0, start) + content.slice(end);
-}
 
 export type RealEngineOptions = {
   ablation?: Ablation;
+  /** Which prompt arrangement to render. See ./layout.ts. */
+  layout?: Layout;
   /** Fixed sampler seed. The planning phase runs at temperature 0 and is greedy
    *  regardless; this pins the UNCONSTRAINED answer phase, which the app samples
    *  at 0.7 and which would otherwise vary between runs for reasons that have
@@ -101,6 +44,7 @@ export type RealEngineOptions = {
  */
 export function realEngine(model: RealModel, opts: RealEngineOptions = {}): FixtureEngine {
   const ablation = opts.ablation ?? 'none';
+  const layout = opts.layout ?? 'current';
   let generations = 0;
 
   const engine: Engine = {
@@ -112,7 +56,11 @@ export function realEngine(model: RealModel, opts: RealEngineOptions = {}): Fixt
       // as it does in `LlamaEngine` and in the fixture engine.
       const phase = genOpts?.grammar ? 'plan' : 'answer';
 
-      const sent = messages.map((m) => {
+      // Layout first, then ablation: an ablation names a section of the
+      // CURRENT prompt, and applying it before the rearrangement would cut from
+      // a document that is about to be rebuilt.
+      const laid = applyLayout(messages, layout);
+      const sent = laid.map((m) => {
         const cut = ablate(m.content, ablation);
         return cut === null ? m : { ...m, content: cut };
       });

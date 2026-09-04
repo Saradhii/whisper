@@ -1,54 +1,54 @@
 {
   "model": "qwen3-1.7b-q4km.gguf",
   "ablation": "none",
-  "recordedAt": "2026-09-04T19:44:05.639Z",
+  "recordedAt": "2026-09-04T19:50:23.468Z",
   "overall": {
-    "turns": 78,
-    "completed": 49,
-    "toolCorrect": 66,
-    "argsCorrect": 65,
-    "callsCorrect": 56,
-    "answerCorrect": 64
+    "turns": 82,
+    "completed": 47,
+    "toolCorrect": 69,
+    "argsCorrect": 66,
+    "callsCorrect": 54,
+    "answerCorrect": 69
   },
   "groups": {
     "dates": {
       "turns": 15,
-      "completed": 8,
-      "toolCorrect": 14,
-      "argsCorrect": 10,
-      "callsCorrect": 9,
-      "answerCorrect": 15
+      "completed": 6,
+      "toolCorrect": 13,
+      "argsCorrect": 9,
+      "callsCorrect": 8,
+      "answerCorrect": 14
     },
     "no-tool": {
-      "turns": 15,
-      "completed": 12,
-      "toolCorrect": 13,
-      "argsCorrect": 15,
-      "callsCorrect": 13,
-      "answerCorrect": 13
+      "turns": 19,
+      "completed": 15,
+      "toolCorrect": 15,
+      "argsCorrect": 19,
+      "callsCorrect": 15,
+      "answerCorrect": 18
     },
     "multistep": {
       "turns": 8,
-      "completed": 4,
-      "toolCorrect": 4,
+      "completed": 2,
+      "toolCorrect": 3,
       "argsCorrect": 8,
-      "callsCorrect": 4,
-      "answerCorrect": 7
+      "callsCorrect": 3,
+      "answerCorrect": 5
     },
     "suppression": {
       "turns": 5,
-      "completed": 3,
-      "toolCorrect": 4,
+      "completed": 2,
+      "toolCorrect": 3,
       "argsCorrect": 5,
-      "callsCorrect": 4,
-      "answerCorrect": 4
+      "callsCorrect": 3,
+      "answerCorrect": 3
     },
     "refusal": {
       "turns": 4,
-      "completed": 4,
+      "completed": 3,
       "toolCorrect": 4,
-      "argsCorrect": 4,
-      "callsCorrect": 4,
+      "argsCorrect": 3,
+      "callsCorrect": 3,
       "answerCorrect": 4
     }
   }

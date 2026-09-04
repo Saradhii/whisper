@@ -77,7 +77,14 @@ function row(label: string, m: Metrics): string {
 
 export function formatTable(
   summary: Summary,
-  meta: { model: string; backend: string; ablation: string; seed: number; ms: number },
+  meta: {
+    model: string;
+    backend: string;
+    ablation: string;
+    layout: string;
+    seed: number;
+    ms: number;
+  },
 ): string {
   // `call ok` leads because it is the only column that is monotone in accuracy:
   // see the note on Metrics.callsCorrect.
@@ -87,7 +94,8 @@ export function formatTable(
   const lines = [
     '',
     `  agent eval — REAL MODEL (accuracy only; these timings mean nothing)`,
-    `  model ${meta.model}   backend ${meta.backend}   ablation ${meta.ablation}   seed ${meta.seed}`,
+    `  model ${meta.model}   backend ${meta.backend}   seed ${meta.seed}`,
+    `  layout ${meta.layout}   ablation ${meta.ablation}`,
     `  wall ${(meta.ms / 1000).toFixed(1)}s   mean steps ${summary.meanSteps.toFixed(2)}`,
     '',
     head,
