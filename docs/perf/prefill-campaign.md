@@ -684,6 +684,22 @@ that should not have been** — and none had a natural failing assertion:
   two reported sentences plan, read as fixed, and close the investigation while
   the class survived.
 
+  **Fixed in `1711cf1`, and it cost no coverage.** The gate now normalizes and
+  requires the WHOLE string to match `^phrase( phrase)*$` over a list of
+  complete pleasantries. Composing phrases is safe where composing words was
+  not: "morning" + "how are you doing today" is still a pleasantry, while "hey"
+  + six filler words is a question. All six corpus pleasantries that fast-pathed
+  before still do — "Perfect, thanks — that is all for now" is three listed
+  phrases end to end — so the coverage the old design bought with loose filler
+  was, as far as the corpus can see, coverage it never needed.
+
+  Two details worth keeping. The digit check must run BEFORE normalization,
+  because normalization strips digits and "hi 7" would otherwise reduce to a
+  matching "hi". And the regression test pins the CLASS, not the instances: 7
+  pleasantry prefixes crossed with 8 innocent-word questions in 3 punctuation
+  shapes, with each question also asserted to plan on its own — so the test
+  proves the greeting prefix is what would have changed the verdict.
+
 Everything else in this document is about verifying claims. This class is
 different: there is no claim to check, because nothing is asserting anything.
 The tests that catch it are **assertions about what does NOT happen** — no
