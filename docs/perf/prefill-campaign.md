@@ -490,6 +490,25 @@ whole tool descriptions — the strongest lever this codebase has on a 1.7B — 
 the authority of an eval that cannot see the difference. The three slices are
 rules ~679, catalog ~722, examples ~608: there is no fat target.
 
+### The price, named deliberately
+
+Raising the reserve 2816 → 3200 cuts agent-mode conversation history from 1280
+to **896 tokens — a 30% reduction in how much of the conversation the model can
+see** (`historyBudget` is `max(512, nCtx - reserve)`).
+
+**This is a user-visible product change that came out of a latency campaign, and
+it is recorded here so it is not rediscovered as a regression next week.** The
+trade is right: a silently truncated tool catalog produces confident wrong
+actions, while a shorter memory produces "sorry, what were we discussing" — one
+of those is a lie and the other is an inconvenience. But it was a side effect,
+not a goal, and it deserves to be a named decision.
+
+Two things follow. A phone run should subjectively check that a tool
+conversation does not lose the thread too early — that is in the phone protocol.
+And **if 896 turns out to be too tight in practice, the lever is `nCtx`, not the
+reserve.** The reserve is now derived and truthful; un-deriving it would simply
+restore the overflow.
+
 **The requirement is currently met by nothing that ships.** Enumerating which
 models satisfy "a tools model needs `n_ctx` >= reserve + 1024 tokens of real
 history" produces an exemption list of six — and six is *every* tools-capable
