@@ -33,7 +33,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { parseDecision } from '@/src/agent/grammar';
 import { runAgent, type AgentEvent } from '@/src/agent/loop';
-import { agentPrefix, TOOL_PROMPT_RESERVE } from '@/src/agent/prompt';
+import { agentPrefix, localDate, TOOL_PROMPT_RESERVE } from '@/src/agent/prompt';
 import { TOOLS } from '@/src/agent/tools';
 import * as Trace from '@/src/agent/trace';
 import Composer from '@/src/chat/Composer';
@@ -78,9 +78,17 @@ const uid = () => `m${launchTag}-${++msgSeq}`;
 // Date only, no time-of-day: llama.cpp reuses the KV cache for the longest
 // byte-stable prompt prefix, so a changing prefix would force a full re-prefill
 // every single turn. User instructions are equally stable between edits.
+//
+// The date comes from `localDate`, NOT `toISOString()`. This line used to read
+// `now.toISOString().slice(0, 10)`, which is UTC: in IST (+05:30) that tells
+// the model it is still yesterday for the first five and a half hours of every
+// day, so a chat at 01:00 on the 5th was told the date was the 4th. prompt.ts
+// had already hit this and written `localDate` for it; the plain-chat path
+// simply never used it. Sharing the helper is what stops the two paths
+// disagreeing about what day it is.
 const chatSystemPrompt = (now: Date, personaExtra: string) =>
   `You are Whisper, a helpful, private assistant running fully on the user's phone. ` +
-  `Today's date is ${now.toISOString().slice(0, 10)}. Be concise and natural.` +
+  `Today's date is ${localDate(now)}. Be concise and natural.` +
   (personaExtra.trim() ? `\nUser instructions: ${personaExtra.trim()}` : '');
 
 // Context budget: leave room for the reply and the system/tool scaffolding.

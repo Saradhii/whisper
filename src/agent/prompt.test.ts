@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { renderExamples, WORKED_EXAMPLES } from './examples';
 import {
   answerNote,
+  localDate,
   planNote,
   systemPrompt,
   TOOL_PROMPT_RESERVE,
@@ -266,3 +267,21 @@ describe('answerNote', () => {
   });
 });
 
+
+describe('localDate', () => {
+  // Regression: the plain-chat path in app/index.tsx used
+  // `now.toISOString().slice(0, 10)`, which is UTC. East of Greenwich the UTC
+  // date is still yesterday for the first hours of every local day — in IST
+  // (+05:30), until 05:30 — so the model was told the wrong date every night.
+  // Constructed from LOCAL components so the assertion holds in any timezone.
+  it('reports the local calendar date, not the UTC one', () => {
+    // 00:30 local: east of UTC this instant is still the previous UTC day.
+    expect(localDate(new Date(2026, 8, 5, 0, 30))).toBe('2026-09-05');
+    // 23:30 local: west of UTC this instant is already the next UTC day.
+    expect(localDate(new Date(2026, 8, 5, 23, 30))).toBe('2026-09-05');
+  });
+
+  it('zero-pads month and day', () => {
+    expect(localDate(new Date(2026, 0, 3))).toBe('2026-01-03');
+  });
+});

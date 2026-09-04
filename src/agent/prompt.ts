@@ -211,7 +211,8 @@ const pad = (n: number) => String(n).padStart(2, '0');
  * tell the model it is still yesterday for the first five and a half hours of
  * every day, and every "tomorrow" computed from it would be today.
  */
-const localDate = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+export const localDate = (d: Date) =>
+  `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 
 /**
  * The instruction that turns the final, UNCONSTRAINED generation into a reply
