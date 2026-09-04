@@ -642,6 +642,34 @@ expensive if they had been built on.
   stayed 79/79, every guard stayed green, and the removal was still wrong. The
   corpus replays scripted responses; it cannot see what a real model would do.
 
+### The class of bug that verification does not reach
+
+Two of the bugs found tonight were not wrong answers. They were **work running
+that should not have run**, and neither had a natural failing assertion:
+
+- The prewarm fired for every model, including ones that never reach `runAgent`
+  — spending ~28s of CPU and a ~100 MB snapshot write to populate a cache that
+  could never be hit. The feature was gated on the agent path; the CALL was
+  placed in the model-load effect, which knows nothing about which path a turn
+  will take. `useTools` and `spec.tools` were two different questions and only
+  one was asked.
+- A first draft of the release smoke test scanned the whole logcat buffer gated
+  on a condition that was always true, so it would have reported unrelated
+  system noise as a release blocker. A smoke test that cries wolf gets ignored
+  on the night it is right.
+
+Everything else in this document is about verifying claims. This class is
+different: there is no claim to check, because nothing is asserting anything.
+The tests that catch it are **assertions about what does NOT happen** — no
+prewarm for a model without tools, no trace work when tracing is off, no
+snapshot for a cache that cannot be hit — and nobody writes those until after
+the first time.
+
+Two places tonight got it right and are worth copying: `tailLabel()` returns
+early on `!Trace.isEnabled()` *before* stringifying the prompt while still
+updating its cross-turn state, and the prewarm now checks `spec.tools` at the
+call site rather than trusting the feature gate downstream.
+
 ---
 
 ## Landed: the relative-times block is conditional
