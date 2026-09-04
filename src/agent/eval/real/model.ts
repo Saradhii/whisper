@@ -50,6 +50,64 @@ export const CONTEXT_SIZE = Number(process.env.WHISPER_EVAL_CTX ?? 4096);
 /** Extra stop strings, mirroring `spec.stop` for this model in the catalog. */
 const STOP = ['<|im_end|>'];
 
+/**
+ * Hard ceiling on one generation, in ms.
+ *
+ * OBSERVED, not defensive: on this machine `generateCompletion()` intermittently
+ * returns a promise that never settles. A stack sample of a wedged run showed
+ * the main thread parked in `uv__io_poll` at ~1.7% CPU — not computing, just
+ * waiting on a native completion that never came back. It reproduces perhaps
+ * one full-corpus run in three, and only when the machine is also running an
+ * emulator and a gradle build, so it smells like a Metal dispatch lost under
+ * memory pressure rather than anything in this harness.
+ *
+ * Without a ceiling, one wedged generation costs the entire run and prints
+ * nothing at all — the worst possible failure mode for a gate. With it, the
+ * scenario throws, `scoreAll()` records it as a failed row (that is exactly what
+ * its try/catch is for), and the other 70-odd scenarios still produce a table.
+ * A run that hits this is visibly degraded rather than silently absent.
+ *
+ * A legitimate generation here is well under a second, and the slowest observed
+ * (a full 256-token constrained plan on a contended machine) is a few seconds.
+ * 45 s is therefore already far into pathological territory, and keeping it
+ * tight matters: the wedge is STICKY — once a sequence stops answering, every
+ * later generation on it does too — so a loose timeout turns one wedge into
+ * `timeout x 70 scenarios` of dead waiting instead of a fast, legible failure.
+ * `CONSECUTIVE_TIMEOUT_LIMIT` is the other half of that.
+ */
+const GENERATION_TIMEOUT_MS = Number(process.env.WHISPER_EVAL_GEN_TIMEOUT_MS ?? 45_000);
+
+/**
+ * Give up on the whole run after this many timeouts in a row.
+ *
+ * Because the wedge is sticky, a run that has hit it three times running is not
+ * going to recover, and every further scenario is 45 s of nothing followed by a
+ * failed row. Aborting turns a two-hour non-answer into a one-minute "the
+ * runtime wedged, run it again" — and, critically, stops a wedged run from
+ * writing a catastrophically low score that someone might mistake for a real
+ * accuracy regression.
+ */
+const CONSECUTIVE_TIMEOUT_LIMIT = 3;
+
+/**
+ * Force the CPU backend with WHISPER_EVAL_GPU=false.
+ *
+ * Accuracy is identical either way — same weights, same grammar, same sampler —
+ * so this costs nothing that this harness measures. It exists because the wedge
+ * above has only ever been seen on Metal, and only when the machine was also
+ * hosting an Android emulator and a gradle build.
+ *
+ * KNOW WHAT IT COSTS BEFORE YOU REACH FOR IT: node-llama-cpp ships a Metal
+ * prebuild only, so asking for `gpu: false` makes it clone llama.cpp and BUILD
+ * FROM SOURCE — a one-off ~10 minute compile (cached at
+ * `<runner>/node-llama-cpp/llama/localBuilds/` for later runs) that needs Xcode
+ * and a network connection. A run that appears to have hung right after
+ * starting is usually this compile; check the log before killing it. Prefer
+ * simply re-running on Metal, which is a 45-second experiment, and keep this
+ * for a machine where the wedge is persistent.
+ */
+const USE_GPU = process.env.WHISPER_EVAL_GPU !== 'false';
+
 export type Availability =
   | { ok: true }
   | { ok: false; reason: string };
@@ -115,7 +173,7 @@ type Completion = {
 };
 
 type Runner = {
-  getLlama(): Promise<{
+  getLlama(options?: { gpu: false }): Promise<{
     gpu: string | false;
     createGrammar(options: { grammar: string }): Promise<Grammar>;
     loadModel(options: { modelPath: string }): Promise<{
@@ -197,7 +255,7 @@ export async function loadRealModel(): Promise<RealModel> {
   }
   const template = new Template(source);
 
-  const llama = await runner.getLlama();
+  const llama = await runner.getLlama(USE_GPU ? undefined : { gpu: false });
   const model = await llama.loadModel({ modelPath: MODEL_PATH });
   const context = await model.createContext({ contextSize: CONTEXT_SIZE, sequences: 1 });
   const completion = new runner.LlamaCompletion({ contextSequence: context.getSequence() });
@@ -214,6 +272,10 @@ export async function loadRealModel(): Promise<RealModel> {
     return made;
   };
 
+  // See CONSECUTIVE_TIMEOUT_LIMIT: the wedge is sticky, so the run is abandoned
+  // rather than grinding through seventy more 45-second nothings.
+  let consecutiveTimeouts = 0;
+
   return {
     backend: String(llama.gpu || 'cpu'),
     async complete(messages, opts) {
@@ -228,18 +290,66 @@ export async function loadRealModel(): Promise<RealModel> {
         bos_token: '',
         eos_token: '<|im_end|>',
       });
-      const text = await completion.generateCompletion(prompt, {
-        ...(opts.grammar ? { grammar: await grammarFor(opts.grammar) } : {}),
-        maxTokens: opts.maxTokens ?? 1024,
-        temperature: opts.temperature ?? 0.7,
-        ...(opts.seed === undefined ? {} : { seed: opts.seed }),
-        customStopTriggers: STOP,
-        ...(opts.onToken ? { onTextChunk: opts.onToken } : {}),
-      });
+      if (consecutiveTimeouts >= CONSECUTIVE_TIMEOUT_LIMIT) {
+        throw new Error(
+          `abandoning the run: ${consecutiveTimeouts} generations in a row exceeded ` +
+            `${GENERATION_TIMEOUT_MS} ms. The llama.cpp runtime has wedged and will not ` +
+            `recover on this context. Re-run; if it recurs, use WHISPER_EVAL_GPU=false ` +
+            `(same accuracy, CPU backend). NOTE: the score from this run is meaningless ` +
+            `and must NOT be read as an accuracy regression.`,
+        );
+      }
+      let text: string;
+      try {
+        text = await withTimeout(
+          completion.generateCompletion(prompt, {
+            ...(opts.grammar ? { grammar: await grammarFor(opts.grammar) } : {}),
+            maxTokens: opts.maxTokens ?? 1024,
+            temperature: opts.temperature ?? 0.7,
+            ...(opts.seed === undefined ? {} : { seed: opts.seed }),
+            customStopTriggers: STOP,
+            ...(opts.onToken ? { onTextChunk: opts.onToken } : {}),
+          }),
+          prompt,
+        );
+      } catch (e) {
+        // Only a TIMEOUT counts toward the wedge tally. A grammar error or an
+        // over-long prompt is a real, per-scenario failure and must not trip the
+        // abort — that would hide a genuine corpus problem behind a runtime one.
+        if (e instanceof Error && e.message.startsWith('generation exceeded')) {
+          consecutiveTimeouts++;
+        }
+        throw e;
+      }
+      consecutiveTimeouts = 0;
       // LlamaEngine returns `result.text.trim()`; matching it here keeps the
       // parser and every `mustContain` assertion seeing the same string.
       return text.trim();
     },
     dispose: () => model.dispose(),
   };
+}
+
+/**
+ * Reject if the underlying completion never settles. See GENERATION_TIMEOUT_MS.
+ *
+ * Cleared on BOTH paths, which is the only part that needs care: a corpus is
+ * ~200 generations, and a timer leaked per generation would keep the process
+ * alive for two minutes after the table had already printed.
+ */
+function withTimeout(work: Promise<string>, prompt: string): Promise<string> {
+  let timer: ReturnType<typeof setTimeout>;
+  const bomb = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        new Error(
+          `generation exceeded ${GENERATION_TIMEOUT_MS} ms and was abandoned. This is the ` +
+            `known node-llama-cpp wedge, not a slow prompt — the scenario is scored as a ` +
+            `failure so the rest of the run survives. Re-run it; if it recurs at the same ` +
+            `scenario, suspect the prompt. Prompt tail: ${JSON.stringify(prompt.slice(-160))}`,
+        ),
+      );
+    }, GENERATION_TIMEOUT_MS);
+  });
+  return Promise.race([work, bomb]).finally(() => clearTimeout(timer));
 }

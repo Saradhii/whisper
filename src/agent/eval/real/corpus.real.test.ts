@@ -42,6 +42,7 @@ import {
   formatVariance,
   summarize,
   type Baseline,
+  type Metrics,
   type Summary,
 } from './report';
 
@@ -205,19 +206,30 @@ function writeBaseline(summary: Summary): void {
 /** The output of an ablation run: what the mutilation cost, per group. */
 function delta(baseline: Baseline, now: Summary, ablation: string, only: string): string {
   const sign = (n: number) => (n > 0 ? `+${n}` : String(n));
-  const line = (label: string, was: { argsCorrect: number; toolCorrect: number; completed: number; turns: number } | undefined, got: typeof was) =>
+  const line = (label: string, was: Metrics | undefined, got: Metrics | undefined) =>
     was && got
-      ? `  ${label.padEnd(14)}args ${String(got.argsCorrect).padStart(3)}/${String(got.turns).padEnd(3)} ` +
-        `(${sign(got.argsCorrect - was.argsCorrect)})   tool ${String(got.toolCorrect).padStart(3)}/${String(got.turns).padEnd(3)} ` +
-        `(${sign(got.toolCorrect - was.toolCorrect)})   completed ${String(got.completed).padStart(3)} ` +
+      ? `  ${label.padEnd(14)}call ok ${String(got.callsCorrect).padStart(3)}/${String(got.turns).padEnd(3)} ` +
+        `(${sign(got.callsCorrect - was.callsCorrect)})   tool ${String(got.toolCorrect).padStart(3)} ` +
+        `(${sign(got.toolCorrect - was.toolCorrect)})   args ${String(got.argsCorrect).padStart(3)} ` +
+        `(${sign(got.argsCorrect - was.argsCorrect)})   completed ${String(got.completed).padStart(3)} ` +
         `(${sign(got.completed - was.completed)})`
       : `  ${label.padEnd(14)}(not in baseline)`;
+  // A filtered run's OVERALL is a different denominator from the baseline's, so
+  // subtracting them produces a number like "-54" that means nothing at all.
+  // Only the per-tag rows are comparable, and a filtered run is verified to
+  // reproduce a full run's tag rows exactly.
+  const rows = only
+    ? Object.keys(now.groups).map((t) => line(t, baseline.groups[t], now.groups[t]))
+    : [
+        line('OVERALL', baseline.overall, now.overall),
+        ...Object.keys(now.groups).map((t) => line(t, baseline.groups[t], now.groups[t])),
+      ];
   return [
     '',
-    `  ABLATION "${ablation}"${only ? ` (filtered: ${only})` : ''} vs baseline ${baseline.recordedAt}`,
-    '  ' + '-'.repeat(76),
-    line('OVERALL', baseline.overall, now.overall),
-    ...Object.keys(now.groups).map((t) => line(t, baseline.groups[t], now.groups[t])),
+    `  ABLATION "${ablation}"${only ? ` (filtered: ${only} — OVERALL row omitted, denominators differ)` : ''}`,
+    `  vs baseline ${baseline.recordedAt}`,
+    '  ' + '-'.repeat(94),
+    ...rows,
     '',
     `  A drop here is the harness PASSING its own test: it proves the corpus is`,
     `  sensitive to the prompt section that was removed.`,

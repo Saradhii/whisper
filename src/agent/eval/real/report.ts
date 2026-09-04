@@ -20,6 +20,19 @@ export type Metrics = {
   completed: number;
   toolCorrect: number;
   argsCorrect: number;
+  /**
+   * Tool AND arguments both right — the metric to read first.
+   *
+   * `argsCorrect` alone is misleading and this harness found out the hard way.
+   * `scoreTurn()` only compares arguments for calls whose tool NAME matched
+   * (deliberately: the arguments of a different tool are not a meaningful
+   * comparison), so a turn where the planner called nothing at all scores
+   * `argsCorrect: true` on a vacuous truth. Ablating the date table made two
+   * scenarios stop calling the tool altogether, and `argsCorrect` went UP by
+   * one as a result. Conjoining the two is what makes the number monotone in
+   * the thing anyone actually cares about.
+   */
+  callsCorrect: number;
   answerCorrect: number;
 };
 
@@ -36,6 +49,7 @@ function tally(turns: TurnScore[]): Metrics {
     completed: turns.filter((t) => t.completed).length,
     toolCorrect: turns.filter((t) => t.toolCorrect).length,
     argsCorrect: turns.filter((t) => t.argsCorrect).length,
+    callsCorrect: turns.filter((t) => t.toolCorrect && t.argsCorrect).length,
     answerCorrect: turns.filter((t) => t.answerCorrect).length,
   };
 }
@@ -56,7 +70,8 @@ function row(label: string, m: Metrics): string {
   const cell = (n: number) => `${String(n).padStart(3)}/${String(m.turns).padEnd(3)} ${pct(n, m.turns).padStart(6)}`;
   return (
     `  ${label.padEnd(14)}` +
-    `${cell(m.completed)}  ${cell(m.toolCorrect)}  ${cell(m.argsCorrect)}  ${cell(m.answerCorrect)}`
+    `${cell(m.callsCorrect)}  ${cell(m.toolCorrect)}  ${cell(m.argsCorrect)}  ` +
+    `${cell(m.completed)}  ${cell(m.answerCorrect)}`
   );
 }
 
@@ -64,8 +79,11 @@ export function formatTable(
   summary: Summary,
   meta: { model: string; backend: string; ablation: string; seed: number; ms: number },
 ): string {
+  // `call ok` leads because it is the only column that is monotone in accuracy:
+  // see the note on Metrics.callsCorrect.
   const head =
-    `  ${''.padEnd(14)}${'completed'.padEnd(14)}  ${'tool'.padEnd(14)}  ${'args'.padEnd(14)}  answer`;
+    `  ${''.padEnd(14)}${'call ok'.padEnd(14)}  ${'tool'.padEnd(14)}  ${'args'.padEnd(14)}  ` +
+    `${'completed'.padEnd(14)}  answer`;
   const lines = [
     '',
     `  agent eval — REAL MODEL (accuracy only; these timings mean nothing)`,
@@ -73,12 +91,12 @@ export function formatTable(
     `  wall ${(meta.ms / 1000).toFixed(1)}s   mean steps ${summary.meanSteps.toFixed(2)}`,
     '',
     head,
-    '  ' + '-'.repeat(76),
+    '  ' + '-'.repeat(94),
     row('OVERALL', summary.overall),
   ];
   const tags = Object.keys(summary.groups);
   if (tags.length) {
-    lines.push('  ' + '-'.repeat(76));
+    lines.push('  ' + '-'.repeat(94));
     for (const tag of tags) lines.push(row(tag, summary.groups[tag]!));
   }
   lines.push('');
@@ -130,7 +148,7 @@ export function spread(values: number[]): Spread {
 
 export function formatVariance(runs: Summary[]): string {
   if (runs.length < 2) return '';
-  const keys = ['completed', 'toolCorrect', 'argsCorrect', 'answerCorrect'] as const;
+  const keys = ['callsCorrect', 'toolCorrect', 'argsCorrect', 'completed', 'answerCorrect'] as const;
   const lines = [
     '',
     `  run-to-run variance over ${runs.length} repeats (different seeds, same corpus)`,
@@ -146,9 +164,9 @@ export function formatVariance(runs: Summary[]): string {
   }
   const dates = runs.every((r) => r.groups.dates);
   if (dates) {
-    const s = spread(runs.map((r) => r.groups.dates!.argsCorrect));
+    const s = spread(runs.map((r) => r.groups.dates!.callsCorrect));
     lines.push(
-      `  ${'dates argsCorrect'.padEnd(16)}${String(s.min).padStart(5)}${String(s.max).padStart(6)}` +
+      `  ${'dates call ok'.padEnd(16)}${String(s.min).padStart(5)}${String(s.max).padStart(6)}` +
         `${s.mean.toFixed(1).padStart(8)}${s.stdev.toFixed(2).padStart(8)}`,
     );
   }
@@ -190,7 +208,7 @@ export function compare(baseline: Baseline, now: Summary, tolerance = 2): Regres
   const out: Regression[] = [];
   const check = (where: string, was: Metrics | undefined, got: Metrics | undefined) => {
     if (!was || !got) return;
-    const strict = ['toolCorrect', 'argsCorrect'] as const;
+    const strict = ['callsCorrect', 'toolCorrect', 'argsCorrect'] as const;
     const loose = ['completed', 'answerCorrect'] as const;
     for (const m of strict) {
       if (got[m] < was[m]) out.push({ where, metric: m, was: was[m], now: got[m] });
