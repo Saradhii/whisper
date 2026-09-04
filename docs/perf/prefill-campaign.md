@@ -636,6 +636,22 @@ expensive if they had been built on.
   date, a clock leaking into the stable prefix, the model-catalog ratchet three
   separate ways. This project's own Phase 0 lesson is that a fixture which
   cannot reproduce a known bug is not yet a gate.
+
+  **The yield on this repo is unusually high, and here is the evidence.** The
+  habit caught two tests that were silently asserting nothing and would have
+  passed forever:
+  - A DST date test matched a WORKED EXAMPLE (`today is Monday 2026-03-02`)
+    rather than the real date table, and only worked at all because the table
+    happens to render above the examples. It would have started asserting
+    against the wrong line the moment the table moved — which configuration C is
+    about to do.
+  - The model-catalog exemption ratchet passed before anyone had tried widening
+    it. Only deliberately adding a seventh model, dropping a still-broken one,
+    and raising an exempt model's window proved it bit in all three directions.
+
+  Both would have read as green coverage. On a codebase whose failure shape is
+  nearly always silent, "does this go red when I break it" is the cheapest
+  question available and it keeps returning bugs.
 - **Distinguish "biggest term" from "biggest recoverable term".** Two people
   independently got this wrong about tool results.
 - **A green suite is not permission.** Three prompt rules were removed, the eval
