@@ -239,13 +239,22 @@ export default function Chat() {
         if (cancelled) return;
         setLoadState({ id: spec.id });
         // Evaluate the agent's system message into the KV cache NOW, while the
-        // user is still looking at an empty chat. It is ~1736 tokens of tool
+        // user is still looking at an empty chat. It is ~2000 tokens of tool
         // catalog and worked examples, it is identical for every turn today,
         // and until this ran it was evaluated for the first time inside the
         // user's first message — measured at 37.2s of a 41.2s opening turn.
         // Best-effort and unawaited: if it fails or the user sends first, the
         // turn just pays what it used to.
-        void engineFor(spec).prewarm?.(agentPrefix(TOOLS));
+        //
+        // ONLY for a model that will actually run the agent. A model without
+        // `tools` never calls runAgent — every turn goes down the plain-chat
+        // path with `chatSystemPrompt`, which shares almost nothing with this
+        // prefix. Warming it for such a model spends ~28s of CPU on the test
+        // AVD, the battery that costs on a phone, and (since the prefix KV
+        // snapshot landed) a ~100 MB write to the cache directory, to populate
+        // a cache that can never be hit. The catalog's own recommended vision
+        // model is exactly this case.
+        if (spec.tools) void engineFor(spec).prewarm?.(agentPrefix(TOOLS));
         // First load of an uncensored model → run the canary self-test in the
         // background (does not block chat; result drives the header badge).
         void ensureVerified(spec);
