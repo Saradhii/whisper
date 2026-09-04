@@ -445,18 +445,27 @@ export const LlamaEngine: Engine = {
             ...messages.slice(0, -1),
             { ...last, content: full.slice(0, end) },
           ];
-          // n_predict 1, not 0, DESPITE llama.rn documenting 0 as exactly this
-          // operation ("no tokens will be generated but the prompt is evaluated
-          // into the cache"; -1 is the infinite one). Measured on the test AVD:
-          // with 1, a cold turn's prefill fell from 2333 tokens to 597 and 672
-          // on two runs; with 0 and a longer settle it was 2722 — i.e. the
-          // cache came back EMPTIER than with no prewarm at all. One noisy
-          // sample against two consistent ones, so this keeps the value that
-          // demonstrably works. Worth re-testing with context.bench() on a
-          // quiet machine; if 0 does populate the cache it saves one token.
+          // n_predict 0 — "evaluate the prompt, generate nothing". Not just a
+          // tidier spelling of 1: with n_predict 1 the sampled token is pushed
+          // into rn-llama's `embd` (rn-completion.cpp:621) but never decoded
+          // into the KV cache, leaving embd one token LONGER than the cache is
+          // deep. The next call derives its cache hit from
+          // find_common_prefix_length(embd, ...) (rn-completion.cpp:142), so if
+          // that stray token happens to equal the first divergent token of the
+          // next prompt — very possible after a system prompt, where the greedy
+          // pick is often the same ChatML marker the next turn opens with — the
+          // hit lands one cell past what is actually cached and a token is
+          // silently skipped. n_predict 0 returns at rn-completion.cpp:574,
+          // BEFORE that push_back, so embd is exactly the prefix.
+          //
+          // Caveat for whoever benchmarks this: one contended run with 0
+          // measured a cold prefill of 2722 tokens, WORSE than the 2333 with no
+          // prewarm at all, against 597/672 on two runs with 1. Nothing in the
+          // source explains that and the run was noisy (5 tok/s), so it is
+          // recorded rather than acted on. Settle it with context.bench().
           await context.completion({
             messages: sliced as RNLlamaOAICompatibleMessage[],
-            n_predict: 1,
+            n_predict: 0,
             temperature: 0,
             ...(loadedSpec?.stop ? { stop: loadedSpec.stop } : {}),
           });
