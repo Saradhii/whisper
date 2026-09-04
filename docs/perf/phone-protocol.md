@@ -15,37 +15,33 @@ re-pin these three fields whenever it is rebuilt.
 
 | | |
 |---|---|
-| commit | `10f9134` (includes A1 append-only layout, the fast path, prewarm + prefix KV) |
-| md5 | `59be33e3c18d1e764c08a3a95d15c47d` |
-| built | 2026-09-05 01:10, from a clean tree with `main` frozen |
+| commit | `73e4092` (config C, n_ctx 8192, derived reserve, phrase gate, prewarm + prefix KV) |
+| md5 | `901a5e3a70b57d66849fadc856a7fc9e` |
+| built | 2026-09-05 02:53, clean tree, `main` frozen, exclusive `node_modules` |
+| smoke test | **8/8 passed** (`scripts/smoke-release.py`), incl. a full turn and a clean logcat |
 
 Verified by evidence, not assumption: the APK's Hermes bundle was extracted and
 searched for markers of the newest commits. **Search both ASCII and UTF-16-LE** —
 Hermes stores a string as UTF-16 if it contains any non-ASCII character, so
 `'skipped planning — conversational turn'` (em dash) is invisible to an ASCII
-grep and reads as a stale build. Confirmed present: `Never search` (ascii),
-`skipped planning` (utf-16), `Reference, not a request` (utf-16).
+grep and reads as a stale build. Confirmed present in this build: `much appreciated` and `take care` (ascii, the
+phrase gate), `skipped planning` (utf-16, the fast path), `Never search` (ascii),
+`Reference, not a request` (utf-16), `Dates:` (ascii, config C's date table at
+the decision point).
 
-> **This pinned APK predates the context-reserve fix.** `TOOL_PROMPT_RESERVE`
-> was a hand-tuned 2816 that measured, against the real prompt, as 4133 tokens
-> needed versus an `n_ctx` of 4096 — it overflowed. `ctx_shift` discards from
-> the FRONT with `n_keep` pinned at 0, so the first thing evicted is the tool
-> catalog and the JSON protocol, while the grammar keeps the output looking
-> well-formed: a confidently wrong tool call. Fixed on main after this build by
-> deriving the reserve from the prompt actually sent (now 3200).
+> **The context-reserve bug is FIXED in this build.** It is recorded here
+> because the numbers in the AVD column were taken before the fix. The reserve
+> was a hand-tuned 2816 that measured as 4133 tokens needed against an `n_ctx`
+> of 4096 — it overflowed, and `ctx_shift` discards from the FRONT with `n_keep`
+> pinned at 0, so the first thing evicted was the tool catalog while the grammar
+> kept the output looking well-formed: a confidently wrong tool call. The
+> reserve is now derived from the prompt actually sent.
 >
-> Consequence for a run against THIS APK: prefill, TTFT and the cache/prefill
-> columns are still valid — they are short turns that never approach the limit.
-> **Long-turn behaviour is not trustworthy**, so do not judge tool correctness on
-> a multi-step turn with this build, and do not compare long-turn results across
-> the two builds.
->
-> Note also that the fix costs conversation memory: `historyBudget` is
-> `nCtx - reserve`, so agent-mode history falls from **1280 to 896 tokens**. That
-> is the right trade — a silently truncated catalog is far worse than a shorter
-> memory — but it is a user-visible change, and worth a subjective check on the
-> phone that the assistant does not lose the thread too early in a tool
-> conversation.
+> This build also raises `n_ctx` 4096 → 8192 for the four models declaring 6 GB,
+> on a measured +235 MB (VmRSS 1912 → 2147). Agent-mode history therefore goes
+> from 896 to **4992 tokens** — worth a subjective check that a long tool
+> conversation now holds the thread. The two 1.7B models targeting 4 GB devices
+> stay at 4096.
 
 > Provenance is not pedantry here. Two earlier builds of this APK were thrown
 > away because agents committed to `main` while `expo prebuild && gradlew
@@ -161,11 +157,21 @@ Screenshot it, or `adb shell uiautomator dump /sdcard/t.xml && adb shell cat /sd
 validated, and it is more useful sitting on the device than a dev client.
 
 To go back to Metro/hot-reload afterwards, `npm run android` reinstalls the dev
-build. This is necessary because both builds share the package name and are both
+build — and check which port it points at: the emulator was last pointed at a
+worktree's Metro on **8082**, so a dev client may need repointing as well as
+reinstalling. This is necessary because both builds share the package name and are both
 debug-keystore-signed, so installing one silently REPLACES the other — if hot
 reload has mysteriously stopped working, this is why.
 
 ## 5. Results
+
+**Record re-evaluated TOKENS first and seconds second.** Token counts held at
+0% spread across repeated runs last night while wall-clock varied 12-14% on a
+host that reached load average 17.4 — prefill measured 3-8 tok/s against 65-73
+earlier on the same AVD. Tokens are the hardware-independent quantity and the
+thing every fix in this campaign actually moves; seconds are a property of the
+machine you measured on. A phone on a quiet machine will produce very different
+seconds, and someone will try to compare them across runs.
 
 AVD figures are a **proxy and must not be quoted as product performance.**
 Targets are from `prefill-campaign.md`.
@@ -182,8 +188,9 @@ Targets are from `prefill-campaign.md`.
 | B: answer prefill | 113 tok @ 32 t/s | — | |
 | C: warm tool turn, total | not measured cleanly | — | |
 | C: plan prefill | 305 tok @ 38 t/s | — | |
-| D: 2nd cold launch, first-turn `cache` | **unverified** | large | |
-| D: 2nd cold launch, first-turn prefill | **unverified** | small | |
+| D: prewarm drain, 1st vs 2nd cold launch | **297,467 ms → 14 ms** (verified) | ~0 ms | |
+| D: restored cache vs freshly computed | identical to the token (1990/2077) | identical | |
+| D: snapshot file size | 115.8 MiB, written once per prefix change | — | |
 | Peak RSS during a turn | 2.30-2.40 GB | fits 8 GB | |
 
 **Read the first two rows before anything else.** The AVD ran the CPU path
