@@ -1004,3 +1004,79 @@ it was raised once.
   asserts the output is byte-identical, which catches the one hole a signature
   cannot close: a `new Date()` called inside the function. Verified to go red
   when exactly that is reintroduced.
+### The shared-tree race, and the limit of a pre-flight check
+
+Two release builds failed on truncated `node_modules` — first `es-errors`
+missing `ref/syntax/type/uri` while still exporting `./ref`, then
+`whatwg-url-without-unicode` missing `lib/urlencoded`. Different packages, two
+different installs, no error from npm either time. Metro could not resolve them;
+the test suite never noticed, because vitest resolves a far smaller slice of the
+dependency graph than Metro does. **`npm run check` was green at 364 tests on a
+tree that could not bundle.**
+
+**Cause: two sessions sharing one `node_modules`.** Agent worktrees symlink to
+the main checkout's tree, so *every* npm command is a write into everyone else's
+workspace. The concrete trigger was `npm cache verify` run as a "check" while
+another session's `npm ci` was unpacking from that cache — it is not read-only,
+it garbage-collects, and its own output says so:
+`Content garbage-collected: 168 (203265423 bytes)`. Deleting cache entries
+mid-unpack yields exactly this signature: a package directory with some files
+and not others, silence from both processes, and an arbitrary *different*
+package damaged each time.
+
+It also explains the symptom that should have been the tell: one session
+verified the tree green while the other's build minutes later hit a different
+missing file. Each was observing a tree the other was mutating.
+
+**Remedies, in order of value.** Serialize: one session owns `node_modules` at a
+time, announced. Treat every npm invocation as a write, including ones named
+like checks.
+
+Recovery needs THREE commands, and the cache clean is not optional —
+`npm ci` alone was tried and reproduced the damage in a different package,
+because it reinstalls from the same poisoned cache:
+
+    npm cache clean --force
+    npm ci --legacy-peer-deps     # this project needs the flag: expo-thinking-orbs
+                                  # vs react-native-worklets peer conflict
+    npx patch-package             # npm blocks postinstall scripts by default
+
+then a resolution sweep over the packages that have bitten, then the build.
+
+### A check written for the last failure is not a check for the class
+
+Two pre-build checks were handed over after an earlier incident in which an
+agent worktree's `node_modules` **symlink** got committed and git replaced the
+real directory with a link pointing at itself. Both passed on the broken tree:
+
+    git ls-files node_modules     # nothing tracked  -> passed
+    ls -ld node_modules           # real directory   -> passed
+
+They interrogate the SHAPE of the directory — tracked? symlink? — because that
+was the previous failure. They cannot see damage in its CONTENTS.
+
+The honest statement: **pre-build checks reduce the chance of a bad build; they
+do not establish a good one.** Adding `node -e "require.resolve('es-errors/ref')"`
+is only marginally better — it proves one module resolves, not a tree. Only the
+build proves the build, which is the argument for keeping a release build in the
+loop rather than trusting a green suite.
+
+### The silent-work family, final tally
+
+Five instances in one night, all the same shape — work that does not happen, or
+happens when it should not, with no assertion firing either way:
+
+1. The prewarm ran for every model, including ones that never reach `runAgent` —
+   ~28s of CPU and a 116 MiB snapshot write to fill a cache that could never hit.
+2. A smoke test scanned the whole logcat gated on an always-true condition, so it
+   would have reported unrelated system noise as a release blocker.
+3. The fast path skipped schedule questions, because a bag of individually-safe
+   words composes into a question.
+4. Truncated packages installed with no error from npm.
+5. `monkey` printed its usual banner, launched nothing, left focus on the home
+   screen — and the smoke test reported a launch crash. **A sound release build
+   was nearly filed as broken, and the tool's own output gave no signal.**
+   `am start -n <pkg>/.MainActivity` reports what it did.
+
+The remedy in every case is the same, and it is not more vigilance: **assert
+what the tool actually DID, not that it ran.**
