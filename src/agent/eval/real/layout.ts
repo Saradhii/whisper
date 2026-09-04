@@ -71,10 +71,18 @@ function stripDateTable(content: string): string {
   return content.slice(0, start) + content.slice(end + 2);
 }
 
-/** Cut the fenced relative-time sentence out of the reference block. */
+/**
+ * Cut the fenced relative-time sentence out of the reference block.
+ *
+ * Returns the content unchanged when the block is absent, which is now the
+ * COMMON case: `turnReference()` renders the relative times only when
+ * `mentionsTime(request)` says the user named one. A missing block here is
+ * therefore normal and must not throw — unlike a missing date table, which
+ * would mean the landmark had gone stale.
+ */
 function stripRelativeTimes(content: string): string {
   const start = content.indexOf(RELATIVE);
-  if (start < 0) fail('anchors', RELATIVE);
+  if (start < 0) return content;
   const end = content.indexOf(']', start);
   if (end < 0) fail('anchors', 'the ] closing the reference block');
   return content.slice(0, start) + content.slice(end);
@@ -107,9 +115,21 @@ export type Layout =
   /** The pre-A1 arrangement: no date table in the system prefix, and one fat
    *  note carrying clock + dates + relative times + spent calls + request +
    *  protocol, re-rendered after EVERYTHING on every planning step. */
-  | 'legacy';
+  | 'legacy'
+  /**
+   * Configuration C: A1's append-only STRUCTURE, with the date table moved back
+   * next to the decision point.
+   *
+   * A1 bundled two independent changes — (a) make the turn append-only, so only
+   * a short `planInstruction` is displaced per step, and (b) move the date table
+   * out of the per-turn note into the system prefix. The A/B against `legacy`
+   * indicts (b) and says nothing about (a); this layout separates them, keeping
+   * (a) and undoing (b). It is the only arm in which the system prefix is
+   * DATE-INDEPENDENT, which is what lets a prefix KV snapshot outlive midnight.
+   */
+  | 'table-in-note';
 
-export const LAYOUTS: Layout[] = ['current', 'legacy'];
+export const LAYOUTS: Layout[] = ['current', 'legacy', 'table-in-note'];
 
 /**
  * Re-render a planning prompt in the pre-A1 layout.
@@ -158,11 +178,7 @@ export function toLegacyLayout(messages: AgentMessage[]): AgentMessage[] {
   const spent = instr.slice(0, protoAt);
   const protocol = instr.slice(protoAt);
 
-  // Re-home the table: `[… DATE. <relative times>]` becomes
-  // `[… DATE. Dates: <table> <relative times>]`, which is legacyPlanNote's shape.
-  const relAt = bracket.indexOf(RELATIVE);
-  if (relAt < 0) fail('legacy', RELATIVE);
-  const withTable = `${bracket.slice(0, relAt)}Dates: ${table} ${bracket.slice(relAt)}`;
+  const withTable = spliceTable(bracket, table, 'legacy');
 
   const note: AgentMessage = {
     role: 'user',
@@ -180,6 +196,67 @@ export function toLegacyLayout(messages: AgentMessage[]): AgentMessage[] {
 }
 
 /**
+ * Put the date table inside a reference bracket, where `legacyPlanNote()` puts
+ * it: `[… DATE. Dates: <table> <relative times>]`.
+ *
+ * The relative-time sentence is now CONDITIONAL — `turnReference()` renders it
+ * only when `mentionsTime(request)` is true — so most turns have no `Use ONLY
+ * if I say …` to anchor against and the table goes just before the closing
+ * bracket instead. Both arms of the A/B use this same helper, which is what
+ * keeps the conditional-relative-times change held CONSTANT across the
+ * comparison instead of leaking into it as a second variable.
+ */
+function spliceTable(bracket: string, table: string, what: string): string {
+  const close = bracket.indexOf(']');
+  if (close < 0) fail(what, 'the ] closing the reference block');
+  const relAt = bracket.indexOf(RELATIVE);
+  return relAt >= 0 && relAt < close
+    ? `${bracket.slice(0, relAt)}Dates: ${table} ${bracket.slice(relAt)}`
+    : `${bracket.slice(0, close)} Dates: ${table}${bracket.slice(close)}`;
+}
+
+/** Pull the date table out of the system prefix, returning both halves. */
+function takeDateTable(content: string): { system: string; table: string } {
+  const start = content.indexOf(SYS_DATES);
+  if (start < 0) fail('table-in-note', SYS_DATES);
+  const tableStart = start + SYS_DATES.length;
+  const end = content.indexOf('\n\n', tableStart);
+  if (end < 0) fail('table-in-note', 'the blank line after the date table');
+  return {
+    system: content.slice(0, start) + content.slice(end + 2),
+    table: content.slice(tableStart, end).trim(),
+  };
+}
+
+/**
+ * Configuration C: keep A1's message ORDER, move only the date table.
+ *
+ * The table is spliced into the reference bracket immediately before the
+ * relative-time sentence when there is one, and immediately before the closing
+ * bracket when there is not — which is exactly where `legacyPlanNote()` puts
+ * it, so C and `legacy` present the dates to the model identically and differ
+ * only in where the note sits and what else is re-rendered around it. That is
+ * the whole point: it isolates change (b) from change (a).
+ */
+export function toTableInNote(messages: AgentMessage[]): AgentMessage[] {
+  const sysIndex = messages.findIndex((m) => m.content.includes(SYS_DATES));
+  if (sysIndex < 0) fail('table-in-note', SYS_DATES);
+  const { system, table } = takeDateTable(messages[sysIndex]!.content);
+
+  const refIndex = messages.findIndex((m) => m.content.startsWith(REF_HEAD));
+  if (refIndex < 0) fail('table-in-note', REF_HEAD);
+  const ref = messages[refIndex]!.content;
+
+  const splice = spliceTable(ref, table, 'table-in-note');
+
+  return messages.map((m, i) => {
+    if (i === sysIndex) return { ...m, content: system };
+    if (i === refIndex) return { ...m, content: splice };
+    return m;
+  });
+}
+
+/**
  * The answer phase has no reference block and no planning instruction — it ends
  * with `answerNote()` — so only the system half of the layout change applies.
  * Detected by absence rather than by phase, because the engine sees messages,
@@ -191,9 +268,13 @@ export function applyLayout(messages: AgentMessage[], layout: Layout): AgentMess
     messages.some((m) => m.content.startsWith(REF_HEAD)) &&
     messages.some((m) => m.content.includes(PROTOCOL));
   if (!planning) {
+    // Both non-current arms take the table out of the prefix, and neither has a
+    // note to put it back into on the answer phase. Stripping it keeps the
+    // prefix byte-identical across the three arms' answer generations, so an
+    // answer-side difference cannot be an artefact of the prefix differing.
     return messages.map((m) =>
       m.content.includes(SYS_DATES) ? { ...m, content: stripDateTable(m.content) } : m,
     );
   }
-  return toLegacyLayout(messages);
+  return layout === 'legacy' ? toLegacyLayout(messages) : toTableInNote(messages);
 }
