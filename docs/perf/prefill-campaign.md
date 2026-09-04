@@ -644,8 +644,9 @@ expensive if they had been built on.
 
 ### The class of bug that verification does not reach
 
-Two of the bugs found tonight were not wrong answers. They were **work running
-that should not have run**, and neither had a natural failing assertion:
+Three of the bugs found tonight were not wrong answers. They were **work
+running that should not have run — or, in the worst case, work being SKIPPED
+that should not have been** — and none had a natural failing assertion:
 
 - The prewarm fired for every model, including ones that never reach `runAgent`
   — spending ~28s of CPU and a ~100 MB snapshot write to populate a cache that
@@ -657,6 +658,31 @@ that should not have run**, and neither had a natural failing assertion:
   on a condition that was always true, so it would have reported unrelated
   system noise as a release blocker. A smoke test that cries wolf gets ignored
   on the night it is right.
+
+- **The conversational fast path skipped schedule questions.** `skipsPlanning()`
+  is a bag-of-words gate: every word must be in a pleasantry vocabulary, at
+  least one must be an anchor, no attention to order. But safe words compose
+  into unsafe sentences. `how`, `much`, `is`, `there` are each unarguably
+  innocent and together they are a question, so "hey how much work is there
+  today" skipped planning entirely and the model answered a schedule question
+  from nothing. The same question **plans correctly without the greeting** — the
+  anchor requirement works; what defeats it is that a greeting donates the
+  anchor while the rest of the sentence happens to be built from whitelisted
+  filler.
+
+  The instructive part is the attempted fix. Removing the offending words does
+  not work and cannot: `fastPath.test.ts` asserts "thank you so much" is
+  fast-pathed, so `much` must stay in the vocabulary — and once it does,
+  "hey how much is there" passes. That is a proof that no curation of the list
+  can work, not merely evidence that one curation failed. **The defect is the
+  design, not the vocabulary**, and the remedy is to match whole normalized
+  phrases end to end rather than word membership — which restores the property
+  the file's own comment already claimed: it recognises pleasantries, never
+  "sentences assembled from safe pieces".
+
+  A word-removal patch would have been *worse than the bug*: it would make the
+  two reported sentences plan, read as fixed, and close the investigation while
+  the class survived.
 
 Everything else in this document is about verifying claims. This class is
 different: there is no claim to check, because nothing is asserting anything.
