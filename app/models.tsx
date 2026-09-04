@@ -19,6 +19,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { unloadAll } from '@/src/engines';
 import {
+  CATALOG,
   formatBytes,
   sizeTier,
   TIER_HINT,
@@ -37,9 +38,15 @@ export default function Models() {
   const version = useSyncExternalStore(ModelManager.subscribe, ModelManager.getVersion);
 
   const [freeDisk, setFreeDisk] = useState<number | null>(null);
-  // Which size groups are expanded; Medium (where the suggested models live)
-  // starts open.
-  const [openTiers, setOpenTiers] = useState<Set<SizeTier>>(new Set<SizeTier>(['medium']));
+  // Which size groups are expanded. Derived, not hard-coded: this used to open
+  // 'medium' with a comment claiming that is "where the suggested models live",
+  // and it had stopped being true — Llama 3.2 3B is suggested and 1.9 GB, so it
+  // buckets into Mini and a recommendation nobody could see without expanding a
+  // collapsed group. Open whatever tier a suggested model actually lands in, so
+  // a size change to the catalog cannot hide one again.
+  const [openTiers, setOpenTiers] = useState<Set<SizeTier>>(
+    () => new Set(CATALOG.filter((m) => m.suggested).map((m) => sizeTier(m.sizeBytes))),
+  );
   const deviceRam = Device.totalMemory;
 
   useEffect(() => {
@@ -219,6 +226,15 @@ const ModelRow = memo(
       <Text style={styles.cardMeta}>
         {spec.sizeBytes > 0 ? `${formatBytes(spec.sizeBytes)} download` : 'size unknown'}
         {spec.vision ? ' · vision' : ''}
+        {/* Whether a model can act on the phone is the difference between the
+            assistant the onboarding screen promises and one that only talks
+            about alarms — but it lived nowhere in this list, so two cards
+            reading "Recommended" looked interchangeable. Say it on both sides:
+            "· tools" mirrors the chat header's badge, and "· chat only" spells
+            out the absence rather than leaving it to be inferred. Custom models
+            are exempt — they never declare `tools`, and we have not tested
+            them, so silence there is honest and "chat only" would not be. */}
+        {spec.tools ? ' · tools' : spec.custom ? '' : ' · chat only'}
         {spec.minRamBytes > 0 ? ` · needs ${formatBytes(spec.minRamBytes)}+ RAM` : ''}
       </Text>
       {ramRisk ? (
