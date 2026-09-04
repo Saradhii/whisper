@@ -59,6 +59,18 @@ module.exports = defineConfig([
     },
   },
   {
-    ignores: ['android/**', 'ios/**', 'node_modules/**', '.expo/**', 'expo-env.d.ts'],
+    // .claude/worktrees holds throwaway git worktrees for parallel agent work.
+    // They are full copies of the tree, so without this `eslint .` lints the
+    // repo once per worktree and reports another checkout's errors as if they
+    // were main's — which turns `npm run check` red for a reason that has
+    // nothing to do with the code being checked.
+    ignores: [
+      'android/**',
+      'ios/**',
+      'node_modules/**',
+      '.expo/**',
+      '.claude/worktrees/**',
+      'expo-env.d.ts',
+    ],
   },
 ]);
