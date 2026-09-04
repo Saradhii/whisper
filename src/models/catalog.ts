@@ -63,7 +63,21 @@ export const CATALOG: ModelSpec[] = [
     vision: false,
     tools: true,
     suggested: true,
-    nCtx: 4096,
+    // 8192, not 4096. An honest derived TOOL_PROMPT_RESERVE leaves only ~896
+    // tokens of history at 4096 — about four turns — against the 1024 minimum
+    // catalog.test.ts asserts a tools model needs. Trimming the prefix is
+    // exhausted: the system message cannot go below ~1900 tokens without
+    // deleting worked examples, which are this codebase's strongest lever on a
+    // small model. The window is the only remaining way to give the
+    // conversation room.
+    //
+    // Cost, measured on device (Qwen3-1.7B, q8_0 K and V, flash attention on):
+    // VmRSS 1912 -> 2147 MB, RssAnon 655 -> 889 MB, and prefill throughput did
+    // not regress. The whole +235 MB lands in ANONYMOUS memory, which is what
+    // Android's low-memory killer weighs. KV scales with layer count, so a 4B
+    // costs proportionally more — expect ~300 MB here — which is why this is
+    // applied only to the 6 GB models. See docs/perf/prefill-campaign.md.
+    nCtx: 8192,
     stop: ['<|im_end|>'],
   },
   {
@@ -83,7 +97,8 @@ export const CATALOG: ModelSpec[] = [
     vision: false,
     tools: true,
     suggested: true,
-    nCtx: 4096,
+    // 8192 for the same reason as Qwen3 4B above — see that comment.
+    nCtx: 8192,
     stop: ['<|eot_id|>'],
   },
   {
@@ -133,7 +148,8 @@ export const CATALOG: ModelSpec[] = [
     minRamBytes: 6 * GB,
     vision: false,
     tools: true,
-    nCtx: 4096,
+    // 8192 for the same reason as Qwen3 4B above — see that comment.
+    nCtx: 8192,
     stop: ['<|end|>'],
   },
   {
@@ -152,7 +168,8 @@ export const CATALOG: ModelSpec[] = [
     minRamBytes: 6 * GB,
     vision: false,
     tools: true,
-    nCtx: 4096,
+    // 8192 for the same reason as Qwen3 4B above — see that comment.
+    nCtx: 8192,
     stop: ['<|im_end|>'],
   },
   {
@@ -171,6 +188,14 @@ export const CATALOG: ModelSpec[] = [
     minRamBytes: 4 * GB,
     vision: false,
     tools: true,
+    // Stays at 4096 while the 6 GB models move to 8192, and that is deliberate.
+    // The larger window costs a measured +235 MB of ANONYMOUS memory — the
+    // memory Android's low-memory killer weighs — taking this model from 1912
+    // to 2147 MB resident. On the 4 GB devices this entry exists to serve, that
+    // is over half the phone, and being killed mid-answer is worse for the user
+    // than a shorter memory. So this model keeps ~896 tokens of history, stays
+    // in NCTX_EXEMPT in catalog.test.ts, and the exemption list is now what it
+    // should be: the genuinely constrained cases, not every model we ship.
     nCtx: 4096,
     stop: ['<|im_end|>'],
   },

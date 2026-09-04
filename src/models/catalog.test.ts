@@ -41,19 +41,23 @@ describe('catalog context windows', () => {
   //
   // THE FIX IS NOT A SMALLER PROMPT. The prefix has been measured and trimmed;
   // what is left is scar tissue, each line carrying a named on-device failure.
-  // It is nCtx: 8192 would leave 4992 tokens of history. That change is blocked
-  // on a RAM measurement (KV cache size, prefill throughput under a larger KV,
-  // and the prefix KV snapshot whose size scales with cache geometry). If 8192
-  // does not fit, the alternative is not shaving the prompt further — it is
-  // not shipping tools on 4096-context models, which is a product decision.
-  const NCTX_EXEMPT = [
-    'qwen3-4b-instruct-q4km',
-    'llama-3.2-3b-q4km',
-    'phi-4-mini-q4km',
-    'smollm3-3b-q4km',
-    'qwen3-1.7b-q4km',
-    'qwen3-1.7b-abliterated-q4km',
-  ];
+  // It is nCtx: 8192, which leaves 4992 tokens of history.
+  //
+  // RESOLVED. The RAM measurement came back: on device, Qwen3-1.7B with q8_0 K
+  // and V and flash attention on, 4096 -> 8192 costs VmRSS 1912 -> 2147 MB and
+  // RssAnon 655 -> 889 MB, with no prefill throughput penalty. The whole
+  // +235 MB lands in anonymous memory, which is what Android's low-memory
+  // killer weighs. The four models declaring minRamBytes 6 GB now ship 8192 and
+  // have come off this list.
+  //
+  // WHAT REMAINS, AND WHY IT IS NOT A LOOPHOLE. The two entries below declare
+  // minRamBytes 4 GB and exist to serve 4 GB phones. There, +235 MB of
+  // anonymous memory takes the process past half the device, and being killed
+  // mid-answer is a worse outcome for that user than a shorter memory. They
+  // keep 896 tokens of history deliberately. This list is now what an exemption
+  // list should be — the genuinely constrained cases — rather than every model
+  // we ship, which is what it was when the invariant was first written down.
+  const NCTX_EXEMPT = ['qwen3-1.7b-q4km', 'qwen3-1.7b-abliterated-q4km'];
 
   it('gives every tools model room for the agent prompt plus real history', () => {
     for (const m of builtIn.filter((s) => s.tools && !NCTX_EXEMPT.includes(s.id))) {
@@ -68,7 +72,10 @@ describe('catalog context windows', () => {
   it('never lets the exemption list grow', () => {
     // A new model may NOT be added here. If this fails, the answer is to give
     // the model a context window that fits the prompt, not a longer list.
-    expect(NCTX_EXEMPT.length).toBeLessThanOrEqual(6);
+    // Tightened 6 -> 2 when the four 6 GB models moved to nCtx 8192. The bound
+    // ratchets DOWN as models are fixed and must never be relaxed: raising it
+    // is how an exemption list quietly becomes a lowered threshold.
+    expect(NCTX_EXEMPT.length).toBeLessThanOrEqual(2);
   });
 
   it('drops a model from the exemption list as soon as it passes', () => {
