@@ -4,13 +4,13 @@
 // and `process.env.TZ` must be set before anything touches a Date. The rest of
 // the suite runs in the machine's zone; India, where this app is developed and
 // tested, has no DST, which is exactly why the bug below survived.
-process.env.TZ = 'America/New_York';
-
 import { describe, expect, it } from 'vitest';
 
 import { legacyPlanNote, systemPrompt, turnReference } from './prompt';
 import { TOOL_DEFS } from './toolDefs';
 import { paramsToJsonSchema, type AnyTool } from './types';
+
+process.env.TZ = 'America/New_York';
 
 const realTools: AnyTool[] = Object.entries(TOOL_DEFS).map(([name, d]) => ({
   name,

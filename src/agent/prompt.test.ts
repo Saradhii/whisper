@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { renderExamples, WORKED_EXAMPLES } from './examples';
@@ -418,39 +418,40 @@ describe('localDate', () => {
 
 describe('stable prefix', () => {
   // The prewarm (app/index.tsx) renders agentPrefix(TOOLS) at load time; the
-  // turn (loop.ts) renders agentPrefix(tools) when the user sends. They
-  // are the same function, so they agree — but ONLY if the system message
-  // contains nothing that ticks faster than the value they can disagree about.
+  // turn (loop.ts) renders agentPrefix(tools) when the user sends. They are the
+  // same function, so they agree — but ONLY if the system message contains
+  // nothing derived from the clock at all.
   //
   // That invariant is what the whole prewarm and the on-disk prefix KV snapshot
   // rest on, and prompt.ts warns that breaking it fails SILENTLY: the prefix is
-  // simply never matched again, the turn is as slow as it always was, and
-  // nothing says the optimization stopped working. A clock, a seconds field, or
-  // anything derived from Date.now() landing in systemPrompt() would do it.
+  // never matched again, the turn is as slow as it always was, and nothing says
+  // the optimization stopped working.
   //
-  // So: the system message must be byte-identical for any two instants on the
-  // same calendar day, and must differ across days (the date table is real).
-  it('is byte-identical across a whole day, so a prewarm still matches the turn', () => {
-    const justAfterMidnight = new Date(2026, 8, 5, 0, 0, 1);
-    const midMorning = new Date(2026, 8, 5, 9, 41, 17);
-    const justBeforeMidnight = new Date(2026, 8, 5, 23, 59, 59);
-    const a = systemPrompt(realTools);
-    expect(systemPrompt(realTools)).toBe(a);
-    expect(systemPrompt(realTools)).toBe(a);
-  });
-
-  it('is identical ACROSS days, month ends and year ends, so a snapshot survives', () => {
-    // This assertion used to say the opposite — that the prefix changes across
-    // days, "so the date table is genuinely live". That was true of the layout
-    // where the table sat in the system message, and it is exactly the property
-    // that cost a full re-prefill at every midnight and expired the on-disk KV
-    // snapshot nightly. The table now lives in turnReference, so the prefix is
-    // date-independent and both the prewarm and the snapshot stay valid.
-    //
-    // Left as a warning: a passing test asserting the opposite of the current
-    // invariant reads as deliberate and gets preserved by the next reader.
-    const ref = systemPrompt(realTools);
-    expect(systemPrompt(realTools)).toBe(ref);
+  // It is now enforced by the SIGNATURE — `systemPrompt(tools)` takes no Date,
+  // so it cannot render one. Two earlier versions of this block compared
+  // `systemPrompt` against itself at different instants; once the parameter was
+  // removed those became `expect(x).toBe(x)` and asserted nothing at all while
+  // still reading like coverage. The one hole a signature cannot close is a
+  // `new Date()` called INSIDE the function, so that is what is tested here.
+  it('renders nothing derived from the clock, even from an internal new Date()', () => {
+    // The clock is moved rather than inspecting the output for today's date.
+    // Searching for a date string would be BOTH too strict and too weak: the
+    // worked examples carry fixed dates in the same year, and it would flake on
+    // whichever day of the year happened to match one of them. Advancing the
+    // system clock by a year and a day asserts the property directly.
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2026, 8, 5, 1, 30));
+      const a = systemPrompt(realTools);
+      vi.setSystemTime(new Date(2027, 9, 6, 23, 45));
+      expect(systemPrompt(realTools)).toBe(a);
+    } finally {
+      vi.useRealTimers();
+    }
+    // The two live renderings that were removed, named so a reintroduction says
+    // which one came back.
+    expect(systemPrompt(realTools)).not.toMatch(/Today's date is/);
+    expect(systemPrompt(realTools)).not.toMatch(/This week means/);
   });
 
   // The volatile half is allowed — indeed required — to tick, and it lives
