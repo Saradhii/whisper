@@ -36,9 +36,10 @@ import type { AnyTool } from './types';
 /**
  * Context tokens the chat screen holds back for an agent turn, leaving the rest
  * for conversation history. It has to cover the whole of this module's output —
- * the system message (~1900 tokens with the full catalog and examples), the
- * per-turn note, the decisions and results the loop appends as it runs, and the
- * bounded final answer. Under-reserving doesn't fail loudly; it silently evicts
+ * the system message (~1900 tokens with the full catalog, examples and date
+ * table), the per-turn reference block, the trailing instruction, the decisions
+ * and results the loop appends as it runs, and the bounded final answer.
+ * Under-reserving doesn't fail loudly; it silently evicts
  * the user's own messages from the front of the history. prompt.test.ts pins
  * the system message against it.
  */

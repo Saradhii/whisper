@@ -56,6 +56,11 @@ const TOOLS = [
   probe('look_a', 'A returned: the 4pm Intoglo tech sync on Thursday, and nothing else this week.'),
   probe('look_b', 'B returned: Arun Menon, +91 98450 12345, arun@example.com.'),
   probe('look_c', 'C returned: 24 degrees and clear, with rain expected after 9pm.'),
+  // A web_fetch-sized result: longer than the turn budget, so the loop clamps
+  // it to TURN_RESULT_TOKENS * CHARS_PER_TOKEN = 960 characters. This is the
+  // WORST realistic single message, and it exists here because the biggest
+  // rebuilt term on a tool turn is the result payload, not any note.
+  probe('look_big', `The page said: ${'lorem ipsum dolor sit amet consectetur. '.repeat(120)}`),
 ];
 
 /** The shipped registry, built from the pure declarations. Used only to size
@@ -229,16 +234,27 @@ describe('the turn is append-only', () => {
     const lines: string[] = [
       '',
       '  re-evaluated per generation, warm app (system prefix cached)',
-      '  turn         gens  before                          after',
+      '  turn                gens  before                          after',
     ];
-    for (const steps of [0, 1, 2, 3]) {
-      const seen = await runTurn(turnOf(steps));
+    const cases: [string, string[]][] = [
+      ['0-tool turn', turnOf(0)],
+      ['1-tool turn', turnOf(1)],
+      ['2-tool turn', turnOf(2)],
+      ['3-tool turn', turnOf(3)],
+      // The result payload, not any note, is the biggest single message on a
+      // tool turn. This one is clamped to 960 characters by the loop, which is
+      // ~250 real Qwen3 tokens — more than twice the note it replaced. Every
+      // layout pays it exactly once; it is the floor, not the waste.
+      ['1-tool, 960c result', [call('look_big', 'x'), RESPOND, 'Here is the gist.']],
+    ];
+    for (const [label, script] of cases) {
+      const seen = await runTurn(script);
       const after = reEvaluated(seen.map((s) => s.messages));
       const before = reEvaluated(seen.map(asLegacy));
       const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
       const cells = (xs: number[]) => xs.map((c) => String(c).padStart(4)).join(' ').padEnd(24);
       lines.push(
-        `  ${steps}-tool turn  ${String(seen.length).padStart(4)}  ` +
+        `  ${label.padEnd(19)} ${String(seen.length).padStart(4)}  ` +
           `${cells(before)} =${String(sum(before)).padStart(5)}   ` +
           `${cells(after)} =${String(sum(after)).padStart(5)}   ` +
           `${(100 - (sum(after) / sum(before)) * 100).toFixed(0)}% less`,
@@ -263,6 +279,53 @@ describe('the turn is append-only', () => {
     }
     console.log([...lines, ''].join('\n'));
     expect(true).toBe(true);
+  });
+
+  it('pays only genuinely new content when a turn ends on a suppressed repeat', async () => {
+    // The one shape where the answer prompt is NOT an extension of the last
+    // planning prompt: the planner repeats a call, repeat suppression returns
+    // 'exhausted', the loop breaks WITHOUT a final {"respond": true}, and the
+    // answer prompt therefore has a decision and a result where the plan prompt
+    // had its trailing instruction.
+    //
+    // This layout does not fix that, and it does not need to: what the answer
+    // re-evaluates there is the decision, the result and the answer note — all
+    // three genuinely new, none of them ever cached. Discarding a trailing
+    // instruction costs nothing; only evaluating tokens costs anything. The
+    // measurement below is the proof, and it is why "the answer phase throws
+    // away the tail the plan phase built" is the wrong way to read a cache log.
+    const decision = call('look_a', 'x');
+    const seen = await runTurn([decision, decision, 'Same as before.']);
+    expect(seen).toHaveLength(3);
+    expect(seen[2]!.planning).toBe(false);
+
+    const plan = seen[1]!.messages;
+    const answer = seen[2]!.messages;
+
+    // The messages the two prompts genuinely share, and the ones that are new.
+    let same = 0;
+    while (
+      same < plan.length &&
+      same < answer.length &&
+      plan[same]!.role === answer[same]!.role &&
+      plan[same]!.content === answer[same]!.content
+    ) same++;
+    const fresh = promptSize(answer).chars - promptSize(answer.slice(0, same)).chars;
+
+    // Only the trailing instruction is dropped, and everything re-evaluated is
+    // a message this prompt is the first to carry. Nothing cached is rebuilt.
+    expect(plan.slice(0, same)).toEqual(answer.slice(0, same));
+    expect(plan.length - same).toBe(1); // the planInstruction, and nothing else
+    const d = divergence(plan, answer);
+    expect(d.reEvaluatedChars).toBeLessThanOrEqual(fresh);
+
+    // And the legacy layout paid the same here — the fix is in the planning
+    // steps, not this one, which is why "the answer phase throws away the tail
+    // the plan phase built" is the wrong way to read a cache log.
+    const legacy = divergence(asLegacy(seen[1]!), asLegacy(seen[2]!)).reEvaluatedChars;
+    expect(Math.abs(legacy - d.reEvaluatedChars)).toBeLessThanOrEqual(
+      MESSAGE_TEMPLATE_CHARS,
+    );
   });
 
   it('carries the cache across a turn boundary, not just within one', async () => {

@@ -70,9 +70,9 @@ export const CONVERSATION_SCENARIOS = scenarios([
   },
 
   // A bare acknowledgement is the shortest possible turn and has no request in
-  // it at all. `planNote` repeats the user's words last, so what the planner
-  // sees just before deciding is the word "ok" — and the reference block above
-  // it is far longer.
+  // it at all. `turnReference` repeats the user's words after the clock, so
+  // what the planner sees just before the one-sentence instruction is the word
+  // "ok" — and the reference block above it is far longer.
   {
     id: 'chat-acknowledgement',
     title: 'A bare ok needs nothing done',

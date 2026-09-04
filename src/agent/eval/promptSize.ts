@@ -33,15 +33,27 @@ import type { AgentMessage } from '@/src/engines/types';
 export const CHARS_PER_TOKEN = 3.85;
 
 /**
- * Per-message chat-template overhead, in characters.
+ * Per-message chat-template overhead, in characters, for a USER message.
  *
  * `<|im_start|>role\n … <|im_end|>\n` is what llama.rn's template wraps every
  * message in, and it is not free: the prewarm ladder re-evaluated ~6 tokens at
  * each of its four slice boundaries for exactly this. Modelling it here keeps
  * a divergence measured in Node aligned with a message boundary on device — a
  * prompt that appends one message must cost that message PLUS its wrapper.
+ *
+ * The role name is inside the wrapper, so the real figure varies: `user` is 28,
+ * `assistant` 33, `system` 30. `user` is the one quoted because the volatile
+ * tail is made of user messages — the reference block, the results, the
+ * instruction, the answer note. Anything that needs the exact number for a
+ * mixed list must use `wrapperChars` or measure `renderForCache` directly,
+ * which is why every assertion in this campaign does the latter.
  */
-export const MESSAGE_TEMPLATE_CHARS = 23;
+export const MESSAGE_TEMPLATE_CHARS = wrapperChars('user');
+
+/** Exact chat-template overhead for one message of the given role. */
+export function wrapperChars(role: string): number {
+  return `<|im_start|>${role}\n<|im_end|>\n`.length;
+}
 
 /** Estimated Qwen3 tokens for a character count. Always report as "estimated". */
 export function estTokens(chars: number): number {

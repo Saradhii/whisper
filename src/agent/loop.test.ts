@@ -3,6 +3,7 @@ import { z } from 'zod';
 
 import type { AgentMessage, Engine, GenerateResult } from '@/src/engines/types';
 import { approxTokens, clampResult, runAgent, type AgentEvent } from './loop';
+import { agentPrefix } from './prompt';
 import { defineTool } from './types';
 
 type Seen = {
@@ -128,6 +129,19 @@ describe('runAgent (grammar-constrained)', () => {
     expect(tail.content).toBe(
       'Reply with exactly one JSON object: a tool call, or {"respond": true}.',
     );
+  });
+
+  it('opens with exactly the prefix the prewarm warms', async () => {
+    // app/index.tsx warms `agentPrefix(TOOLS)` and nothing else. A turn that
+    // renders that message even one byte differently warms a prefix llama.cpp
+    // will not match, and the failure is SILENT — ~1804 tokens and ~28 seconds
+    // of warming buy nothing, and the only symptom is that the app is as slow
+    // as it always was. The date table moving in here is exactly the kind of
+    // change that could have broken it.
+    const at = new Date('2026-08-02T09:30:00Z');
+    const { engine, seen } = fakeEngine(['{"respond": true}', 'hi']);
+    await runAgent(engine, [echoTool], [{ role: 'user', content: 'what is the score' }], cb([]), at);
+    expect(seen[0]!.messages[0]).toEqual(agentPrefix([echoTool], at)[0]);
   });
 
   it('leaves the reference block out of a turn that never plans', async () => {

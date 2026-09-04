@@ -4,10 +4,11 @@
 // a question someone answers by flashing a build and reading a chat bubble. So
 // this module owns the three things that make a run comparable between commits:
 //
-//   * the clock is frozen from the scenario, never `new Date()`. `planNote()`
-//     renders a seven-day date table off `now` and every date assertion in the
-//     corpus is relative to it, so a live clock would make the corpus pass today
-//     and fail tomorrow for reasons that have nothing to do with the agent.
+//   * the clock is frozen from the scenario, never `new Date()`. `systemPrompt()`
+//     renders a seven-day date table off `now` and `turnReference()` renders the
+//     relative times off it, and every date assertion in the corpus is relative
+//     to it — so a live clock would make the corpus pass today and fail tomorrow
+//     for reasons that have nothing to do with the agent.
 //   * the world is a fresh deep copy per run, so scenario 40 cannot see the
 //     alarm scenario 3 set.
 //   * tool correctness and ARGUMENT correctness are scored separately. This
