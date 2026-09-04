@@ -12,7 +12,8 @@
 //     after it:
 //
 //       systemPrompt      once a day   identity, catalog, examples, date table
-//       turnReference     once a turn  the wall clock and the relative times
+//       turnReference     once a turn  the wall clock, the echoed request, and
+//                                      the relative times when one is named
 //       (decisions/results)            appended as the turn runs
 //       planInstruction   every step   the smallest thing that steers a decision
 //
@@ -108,8 +109,12 @@ function trailingBandTokens(): number {
  */
 export function toolPromptReserve(tools: AnyTool[], now: Date = new Date()): number {
   // A 300-character request, because turnReference slices the echoed request
-  // to exactly that and the reserve has to cover the longest one.
-  const reference = turnReference(now, 'x'.repeat(300));
+  // to exactly that and the reserve has to cover the longest one. It opens with
+  // a digit so mentionsTime() keeps the relative-times block: the reserve has
+  // to cover the reference block at its LONGEST, and a request of 300 x's would
+  // silently measure the shortened one and under-reserve by 61 tokens on every
+  // turn that does name a time.
+  const reference = turnReference(now, `7 ${'x'.repeat(298)}`);
   return (
     estimate(systemPrompt(tools, now).length) +
     estimate(reference.content.length) +
@@ -310,16 +315,26 @@ export function agentPrefix(tools: AnyTool[], now: Date = new Date()): AgentMess
  * the model reads — planInstruction() is, and it is one sentence long — so the
  * note is materially LESS salient at the decision point than it was when the
  * failure was observed, not more.
+ *
+ * The relative-times half is rendered only when the request could possibly
+ * consume it — see mentionsTime(). The clock, the weekday and the echoed
+ * request are unconditional: "What time is it?" is answered from the clock
+ * line, and the echo is the fix for the planner answering this block instead of
+ * the person.
  */
 export function turnReference(now: Date, request = ''): AgentMessage {
   const clock = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   const weekday = now.toLocaleDateString(undefined, { weekday: 'long' });
   const asked = request.trim().slice(0, 300);
+  // Byte-identical to the unconditional rendering when the block is kept: the
+  // prefix is matched by token equality, so a stray space here would be a
+  // silent cache miss on every turn that DOES name a time.
+  const relative = mentionsTime(request) ? ` ${relativeTimes(now)}` : '';
   return {
     role: 'user',
     content:
-      `[Reference, not a request — it is ${clock} on ${weekday}, ${localDate(now)}. ` +
-      `${relativeTimes(now)}]` +
+      `[Reference, not a request — it is ${clock} on ${weekday}, ${localDate(now)}.` +
+      `${relative}]` +
       (asked ? `\nWhat I actually asked you: "${asked}"` : ''),
   };
 }
@@ -389,6 +404,87 @@ export function legacyPlanNote(
       (asked ? `What I actually asked you: "${asked}"\n` : '') +
       `Reply with exactly one JSON object: a tool call, or {"respond": true}.`,
   };
+}
+
+/**
+ * Anything that could make the relative-times block applicable, so the 212
+ * characters it costs can be left out of every turn that cannot use them.
+ *
+ * WHY THIS IS SAFE, AND WHY IT IS NOT THE FAST PATH'S QUESTION.
+ * The fast path decides whether a request needs a TOOL, and the set of ways to
+ * ask for an alarm is open-ended ("I need to be up at 5"), which is why it is a
+ * closed allowlist that fails toward planning. This decides something far
+ * narrower: whether the request contains an expression of TIME. That surface is
+ * lexically constrained in a way an intent is not — an offset from now is
+ * "in <quantity> <unit>" or one of a handful of imminence adverbs, and a named
+ * time carries a digit, an am/pm, or one of noon/midnight/o'clock.
+ *
+ * The block itself already says so: it is fenced with `Use ONLY if I say
+ * "in N minutes/hours"`. Omitting it when no such phrase is present removes
+ * text the prompt has already instructed the model to ignore.
+ *
+ * AND THE FAILURE IS LOUD, WHICH IS THE REAL ARGUMENT. The block exists to fill
+ * an `hour`/`minute` argument, and the only three tools that take one —
+ * set_alarm, schedule_reminder, create_calendar_event — all carry
+ * `requiresConfirmation: true` and render the computed time into the card the
+ * user has to tap ("Set alarm 13:09"). So a word this list misses degrades to a
+ * WRONG TIME THE USER IS SHOWN BEFORE ANYTHING HAPPENS, not to the silent lie a
+ * false skip in fastPath.ts would be. No tool that takes a time runs unseen.
+ *
+ * Two independent triggers, so a miss needs both to fail: the time vocabulary
+ * itself, and the vocabulary of asking this app to schedule something. A
+ * request that names an odd offset ("remind me in a jiffy") still keeps the
+ * block on the word "remind".
+ *
+ * Generous on purpose. A false keep costs the status quo; the whole saving is
+ * on knowledge questions and small talk, which carry none of these words.
+ */
+const TIME_WORDS = new Set([
+  // units — the "N minutes/hours" the block is fenced to
+  'second', 'seconds', 'sec', 'secs', 'minute', 'minutes', 'min', 'mins',
+  'hour', 'hours', 'hr', 'hrs', 'moment', 'moments',
+  // quantities that reach a unit without ever writing a digit
+  'half', 'quarter', 'quarters', 'couple', 'few', 'several', 'dozen',
+  'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+  'ten', 'eleven', 'twelve', 'fifteen', 'twenty', 'thirty', 'forty', 'fifty',
+  'sixty', 'ninety',
+  // offsets from now that carry no unit at all ("remind me in a bit")
+  'now', 'soon', 'shortly', 'later', 'bit', 'while', 'awhile', 'momentarily',
+  'presently', 'immediately', 'straightaway', 'then', 'next', 'ago',
+  'before', 'after', 'afterwards', 'until', 'till',
+  // the clock and the calendar
+  'time', 'times', 'oclock', 'noon', 'midday', 'midnight', 'morning',
+  'afternoon', 'evening', 'night', 'nights', 'tonight', 'am', 'pm', 'clock',
+  'timer', 'countdown', 'today', 'tomorrow', 'yesterday', 'week', 'weeks',
+  'weekend', 'month', 'months', 'day', 'days', 'daily', 'hourly',
+  'early', 'earlier', 'earliest', 'late', 'later', 'latest',
+  'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+  // the second trigger: asking this phone to schedule something. These are the
+  // only consumers of the block, so their presence keeps it whatever the time
+  // is called.
+  'alarm', 'alarms', 'remind', 'reminder', 'reminders', 'reminding', 'snooze',
+  'wake', 'wakes', 'waking', 'wakeup', 'up', 'schedule', 'scheduled',
+  'scheduling', 'appointment', 'appointments', 'meeting', 'meetings',
+  'event', 'events', 'calendar', 'agenda', 'book', 'booking', 'deadline',
+  'due', 'set', 'start', 'starts', 'end', 'ends', 'begin', 'begins',
+]);
+
+/**
+ * True when `request` might name a time, so turnReference() must carry the
+ * relative-times block. Empty means "no request known" and keeps it.
+ */
+export function mentionsTime(request: string): boolean {
+  const text = request.trim();
+  if (!text) return true;
+  // A digit is a clock time, a date or a quantity — every named time this app
+  // has ever been asked for wrote one.
+  if (/\d/.test(text)) return true;
+  return text
+    .toLowerCase()
+    // Apostrophes collapse so "o'clock" -> "oclock", matching the vocabulary.
+    .replace(/['’]/g, '')
+    .split(/[^a-z]+/)
+    .some((w) => TIME_WORDS.has(w));
 }
 
 /**
