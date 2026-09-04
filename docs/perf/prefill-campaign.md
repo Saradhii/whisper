@@ -914,7 +914,9 @@ returns the correct single day under the old layout and the whole week under A1.
 That is the documented named-weekday failure class, caused by the date table
 moving away from the decision point. A pure salience effect.
 
-**The remedy under test is not a revert.** A1 bundled two independent changes:
+**RESOLVED — configuration C landed.** See *Configuration C* below.
+
+**The remedy was not a revert.** A1 bundled two independent changes:
 the append-only turn structure (where the 60% saving lives, unindicted) and
 moving the date table into the system prefix (what the evidence indicts).
 Configuration C — append-only structure, date table back in `turnReference` — is
@@ -933,3 +935,72 @@ the TTFT path.
 - **`rem-in-an-hour` is live today.** "in an hour" at 13:09 returns minute 0
   (14:00, not 14:09) *with* the relative-time anchors present. The signature bug
   this project has fought for months is not fixed.
+
+---
+
+## Configuration C — the resolution
+
+A1 bundled two independent changes. The real-model harness indicted only one.
+
+- **(a) append-only turn structure** — `turnReference` placed once, only a short
+  `planInstruction` displaced per planning step. This is where the 60% mid-turn
+  saving lives. Nothing in the evidence spoke against it.
+- **(b) the date table moved into the system prefix** — a pure salience change,
+  and what cost named-weekday resolution.
+
+**C keeps (a) and undoes (b).** Measured three ways against the real model on the
+`dates` subset, same seed, determinism re-verified for these arms specifically:
+
+| arm | call ok | tool | args | completed | signature failure |
+|---|---|---|---|---|---|
+| **C (shipped)** | **9/15** | **14** | **10** | **7** | — |
+| A1 | 8/15 | 13 | 9 | 6 | `cal-list-named-weekday` → whole week, not Monday |
+| legacy | 8/15 | 14 | 9 | 6 | `rem-tomorrow-morning` → hour 0, not 8 |
+
+**C's passing set is a strict superset of both, losing nothing on any metric.**
+It is a restoration plus a gain, not a third behaviour — the distinction matters,
+because equal aggregates would not have established it. Two scenarios carry the
+gain (`cal-list-named-weekday` returning, `cal-create-half-past` no longer
+emitting a duplicate call) and a third (`rem-tomorrow-morning`) is kept where
+legacy loses it.
+
+### What shipped, and one structural decision
+
+`systemPrompt(tools)` **no longer takes a `Date` at all**. Date-independence is
+now enforced by the signature rather than by a test: the function has no clock to
+render from. `agentPrefix(tools)` likewise, which also makes it impossible for
+the prewarm and the turn to disagree — the silent failure `prompt.ts` warns about.
+
+Consequences beyond accuracy:
+- The prewarmed prefix and the on-disk KV snapshot **survive midnight** instead of
+  being invalidated nightly. Before this, a rollover mid-session shared 116
+  characters of 7059 with the previous prefix, costing ~2754 tokens re-prefilled
+  and ~42s on the AVD, once a day.
+- The snapshot's content hash becomes cheap insurance rather than a daily
+  invalidation, and the daily ~100 MB rewrite goes away.
+
+### The price, paid deliberately
+
+Turn 2's first generation now re-evaluates **791 characters against a previous
+budget of 700** — about +190, the cost of rendering the table once a turn instead
+of never. The ratchet in `appendOnly.test.ts` was raised to 850 **with the
+justification written at the assertion**, including the instruction that a
+further creep is a NEW regression needing its own case: do not raise it because
+it was raised once.
+
+### Two traps caught during the landing
+
+- **The harness's own `legacy` arm was silently a fourth configuration.** C
+  deletes `Today's date is <D>.` from the prefix, and the reconstruction did not
+  restore it — but both A1 and pre-A1 carried that line, so the planner still had
+  today's date. **The unit tests did not catch this**; only cross-checking the
+  arm against an earlier direct measurement did. A test suite can pin a transform
+  against the current `prompt.ts`; it cannot tell you a reconstruction is missing
+  something `prompt.ts` no longer contains.
+- **Two of this document's own guards went vacuous.** Once `systemPrompt` lost its
+  `Date` parameter, two tests comparing it across instants became
+  `expect(x).toBe(x)` — asserting nothing while still reading as coverage. They
+  are replaced by one test that moves the system clock a year and a day and
+  asserts the output is byte-identical, which catches the one hole a signature
+  cannot close: a `new Date()` called inside the function. Verified to go red
+  when exactly that is reintroduced.
