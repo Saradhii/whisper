@@ -58,7 +58,8 @@ const OP_TIMEOUT_MS = Number(args.timeout ?? 900_000);
 
 const DEV_URL = `whisper://expo-development-client/?url=${encodeURIComponent(`http://10.0.2.2:${PORT}`)}`;
 
-const adb = (...a) => execFileSync('adb', [...SERIAL, ...a], { encoding: 'utf8', maxBuffer: 1 << 28 });
+const adb = (...a) =>
+  execFileSync('adb', [...SERIAL, ...a], { encoding: 'utf8', maxBuffer: 1 << 28 });
 
 /**
  * Fire a deep link.
@@ -68,8 +69,7 @@ const adb = (...a) => execFileSync('adb', [...SERIAL, ...a], { encoding: 'utf8',
  * backgrounds the command and silently truncates every parameter after the
  * first. That failure is invisible — the app just receives a shorter URL.
  */
-const link = (query) =>
-  adb('shell', `am start -a android.intent.action.VIEW -d '${query}' ${PKG}`);
+const link = (query) => adb('shell', `am start -a android.intent.action.VIEW -d '${query}' ${PKG}`);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -84,9 +84,13 @@ function startLog(path) {
   mkdirSync(dirname(path), { recursive: true });
   adb('logcat', '-c');
   const out = createWriteStream(path);
-  logProc = spawn('adb', [...SERIAL, 'logcat', '-v', 'epoch', 'RNLlama:I', 'ReactNativeJS:I', '*:S'], {
-    stdio: ['ignore', 'pipe', 'ignore'],
-  });
+  logProc = spawn(
+    'adb',
+    [...SERIAL, 'logcat', '-v', 'epoch', 'RNLlama:I', 'ReactNativeJS:I', '*:S'],
+    {
+      stdio: ['ignore', 'pipe', 'ignore'],
+    },
+  );
   logProc.stdout.pipe(out);
 }
 const stopLog = () => logProc?.kill();
@@ -222,7 +226,7 @@ async function oneLaunch(runIdx) {
   link(DEV_URL);
 
   // The harness announces itself once the chat screen mounts with our bundle.
-  await awaitEvent((e) => e.ev === 'harness_ready', 'harness_ready', 180_000);
+  await awaitEvent((e) => e.ev === 'harness_ready', 'harness_ready', 600_000);
 
   // Force a KNOWN state rather than hoping. The two modes are NOT the same
   // experiment and their cold numbers are not comparable:
@@ -280,7 +284,7 @@ async function main() {
     adb('shell', `am force-stop ${PKG}`);
     await sleep(1500);
     link(DEV_URL);
-    await awaitEvent((e) => e.ev === 'harness_ready', 'harness_ready', 180_000);
+    await awaitEvent((e) => e.ev === 'harness_ready', 'harness_ready', 600_000);
     await op(`op=${args.op}${args.params ? `&${args.params}` : ''}`, String(args.op));
     const evs = events().filter((e) => !['op_start', 'op_done', 'harness_ready'].includes(e.ev));
     writeFileSync(OUT, JSON.stringify({ label: LABEL, op: args.op, events: evs }, null, 2));
@@ -335,9 +339,13 @@ async function main() {
   writeFileSync(OUT, JSON.stringify(report, null, 2));
 
   const row = (name, s) =>
-    s ? `${name.padEnd(18)} ${String(s.median).padStart(8)} ${String(s.min).padStart(8)} ${String(s.max).padStart(8)} ${String(s.spreadPct + '%').padStart(8)}` : `${name.padEnd(18)} (none)`;
+    s
+      ? `${name.padEnd(18)} ${String(s.median).padStart(8)} ${String(s.min).padStart(8)} ${String(s.max).padStart(8)} ${String(s.spreadPct + '%').padStart(8)}`
+      : `${name.padEnd(18)} (none)`;
   console.log(`\n${LABEL} — msg=${JSON.stringify(MSG)}, ${ok.length}/${RUNS} runs ok\n`);
-  console.log(`${''.padEnd(18)} ${'median'.padStart(8)} ${'min'.padStart(8)} ${'max'.padStart(8)} ${'spread'.padStart(8)}`);
+  console.log(
+    `${''.padEnd(18)} ${'median'.padStart(8)} ${'min'.padStart(8)} ${'max'.padStart(8)} ${'spread'.padStart(8)}`,
+  );
   for (const kind of ['cold', 'warm']) {
     console.log(row(`${kind} wall (s)`, summary[kind].wallSec));
     console.log(row(`${kind} re-eval tok`, summary[kind].reevalTokens));

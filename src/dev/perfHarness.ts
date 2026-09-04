@@ -26,11 +26,7 @@
 import * as Linking from 'expo-linking';
 import { useEffect } from 'react';
 import { Platform } from 'react-native';
-import {
-  initLlama,
-  type LlamaContext,
-  type RNLlamaOAICompatibleMessage,
-} from 'llama.rn';
+import { initLlama, type LlamaContext, type RNLlamaOAICompatibleMessage } from 'llama.rn';
 
 import { agentPrefix } from '@/src/agent/prompt';
 import { TOOLS } from '@/src/agent/tools';
@@ -90,8 +86,20 @@ function benchContextParams(modelPath: string, nCtx: number) {
   };
 }
 
-/** Resolve the active model's on-disk path, or throw with a readable reason. */
-function activeModel(): { path: string; nCtx: number; id: string } {
+/**
+ * Resolve the active model's on-disk path, or throw with a readable reason.
+ *
+ * Waits for ModelManager.init() to resolve: a host script fires its op as soon
+ * as the bundle is live, which is comfortably before the active-model id has
+ * been read back from disk, and the un-awaited version of this failed instantly
+ * with "no active model" on every cold launch.
+ */
+async function activeModel(): Promise<{
+  path: string;
+  nCtx: number;
+  id: string;
+}> {
+  await waitFor(() => !!ModelManager.getActive(), 120_000);
   const spec = ModelManager.getActive();
   if (!spec) throw new Error('no active model');
   const files = ModelManager.filePaths(spec);
@@ -109,7 +117,7 @@ async function withFreshContext<T>(
   overrides: Record<string, unknown>,
   fn: (ctx: LlamaContext) => Promise<T>,
 ): Promise<T> {
-  const { path, nCtx } = activeModel();
+  const { path, nCtx } = await activeModel();
   await unloadAll();
   const ctx = await initLlama({
     ...benchContextParams(path, nCtx),
@@ -189,11 +197,7 @@ async function opDrain(api: () => PerfApi): Promise<void> {
   log({ ev: 'drained', ms: Date.now() - t0 });
 }
 
-async function opSend(
-  api: () => PerfApi,
-  msg: string,
-  tag: string,
-): Promise<void> {
+async function opSend(api: () => PerfApi, msg: string, tag: string): Promise<void> {
   const ok = await waitFor(() => api().ready && !api().busy, 300_000);
   if (!ok) {
     log({ ev: 'error', op: 'send', reason: 'never became ready/idle', tag });
@@ -254,10 +258,7 @@ async function opNpredict(reps: number): Promise<void> {
           }
           // The probe: the real thing a first user turn would send.
           const probe = await ctx.completion({
-            messages: [
-              ...prefix,
-              { role: 'user', content: 'hi' },
-            ] as RNLlamaOAICompatibleMessage[],
+            messages: [...prefix, { role: 'user', content: 'hi' }] as RNLlamaOAICompatibleMessage[],
             n_predict: 1,
             temperature: 0,
           });
@@ -301,33 +302,37 @@ async function opParity(
   nr: number,
   threads: number[],
   reps: number,
+  ctxSizes: number[],
 ): Promise<void> {
-  for (const nThreads of threads) {
-    try {
-      // ONE context for every pp value, and the whole list repeated `reps`
-      // times so the arms are INTERLEAVED rather than run in blocks. The host
-      // running this AVD drifts by more than the effect we are looking for over
-      // the span of a few minutes, so 304-then-305 measured once apart in time
-      // would mostly report the drift. Interleaving lets a per-pp median cancel
-      // it. bench() clears the KV cache before every run, so successive calls on
-      // one context are self-consistent — the only hazard is what runs AFTER
-      // (see benchOnce).
-      await withFreshContext({ n_threads: nThreads }, async (ctx) => {
-        for (let rep = 0; rep < reps; rep++) {
-          for (const pp of pairs) {
-            const r = await benchOnce(ctx, pp, tg, nr);
-            log({
-              ev: 'parity',
-              rep,
-              nThreadsReq: nThreads,
-              parity: pp % 2 === 0 ? 'even' : 'odd',
-              ...r,
-            });
+  for (const nCtx of ctxSizes) {
+    for (const nThreads of threads) {
+      try {
+        // ONE context for every pp value, and the whole list repeated `reps`
+        // times so the arms are INTERLEAVED rather than run in blocks. The host
+        // running this AVD drifts by more than the effect we are looking for over
+        // the span of a few minutes, so 304-then-305 measured once apart in time
+        // would mostly report the drift. Interleaving lets a per-pp median cancel
+        // it. bench() clears the KV cache before every run, so successive calls on
+        // one context are self-consistent — the only hazard is what runs AFTER
+        // (see benchOnce).
+        await withFreshContext({ n_threads: nThreads, n_ctx: nCtx }, async (ctx) => {
+          for (let rep = 0; rep < reps; rep++) {
+            for (const pp of pairs) {
+              const r = await benchOnce(ctx, pp, tg, nr);
+              log({
+                ev: 'parity',
+                rep,
+                nCtxReq: nCtx,
+                nThreadsReq: nThreads,
+                parity: pp % 2 === 0 ? 'even' : 'odd',
+                ...r,
+              });
+            }
           }
-        }
-      });
-    } catch (e) {
-      log({ ev: 'error', op: 'parity', nThreads, reason: String(e) });
+        });
+      } catch (e) {
+        log({ ev: 'error', op: 'parity', nThreads, nCtx, reason: String(e) });
+      }
     }
   }
 }
@@ -396,7 +401,10 @@ async function opReload(): Promise<void> {
 
 function nums(v: string | undefined, fallback: number[]): number[] {
   if (!v) return fallback;
-  const out = v.split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n) && n > 0);
+  const out = v
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((n) => Number.isFinite(n) && n > 0);
   return out.length ? out : fallback;
 }
 
@@ -414,7 +422,12 @@ async function dispatch(api: () => PerfApi, url: string): Promise<void> {
   try {
     switch (op) {
       case 'ping':
-        log({ ev: 'pong', ready: api().ready, busy: api().busy, platform: Platform.OS });
+        log({
+          ev: 'pong',
+          ready: api().ready,
+          busy: api().busy,
+          platform: Platform.OS,
+        });
         break;
       case 'new':
         await ChatStore.startNew();
@@ -445,6 +458,7 @@ async function dispatch(api: () => PerfApi, url: string): Promise<void> {
           n('nr', 3),
           nums(q('threads'), [4]),
           n('reps', 3),
+          nums(q('nctx'), [4096]),
         );
         break;
       case 'ctxmem':
@@ -487,7 +501,11 @@ async function dispatch(api: () => PerfApi, url: string): Promise<void> {
 
 // The live view of the chat screen, refreshed by the hook on every render.
 // Module-level on purpose — see installOnce().
-let currentApi: PerfApi = { sendText: async () => {}, ready: false, busy: false };
+let currentApi: PerfApi = {
+  sendText: async () => {},
+  ready: false,
+  busy: false,
+};
 
 let installed = false;
 let queue: Promise<unknown> = Promise.resolve();
