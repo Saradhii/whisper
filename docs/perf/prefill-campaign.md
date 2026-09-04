@@ -654,6 +654,18 @@ expensive if they had been built on.
   question available and it keeps returning bugs.
 - **Distinguish "biggest term" from "biggest recoverable term".** Two people
   independently got this wrong about tool results.
+- **Measure the real thing, not a fixture that resembles it.** An ad-hoc probe
+  built the tool catalog with `z.object({})`, so it rendered with no argument
+  descriptions and reported the system message at 6075 characters against a real
+  7026. Reproduced exactly: 954 characters of argument descriptions, with the
+  remaining 3 characters being weekday-name lengths at a different `now`.
+
+  **The danger is that 6075 is a plausible number** — right order of magnitude,
+  smaller than 7026 in precisely the direction a token-trimming campaign expects
+  to see, and it would have read as a finding. No error was raised and nothing
+  looked wrong. A wrong number pointing the way you hoped is the one you are
+  least likely to question. Use `promptSize.ts` against the real catalog; treat
+  any hand-rolled probe as suspect until it agrees with it.
 - **A green suite is not permission.** Three prompt rules were removed, the eval
   stayed 79/79, every guard stayed green, and the removal was still wrong. The
   corpus replays scripted responses; it cannot see what a real model would do.
