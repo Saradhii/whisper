@@ -561,3 +561,43 @@ keeping the example preserves the enumeration and discards the generalisation.
 That reasoning now lives in a comment above the Rules block, not just here,
 because the next person to trim tokens will read the code. **A green eval run is
 not permission to cut that block.**
+
+---
+
+## How this campaign was actually run, and why the numbers here are trustworthy
+
+Four load-bearing claims were made confidently during this work and later
+retracted. Each was caught by someone going back to the source rather than
+trusting the relay:
+
+| claim | why it was believed | what killed it |
+|---|---|---|
+| `no_extra_bufts: true` is the smoking gun | llama.rn's own docstring says it trades prompt speed for memory, and i8mm is confirmed live | measurement: repack ON is 5.3x WORSE cold (181s) and +1073 MB, because the repack is lazy on first use |
+| ~720 tokens per turn are rebuilt as waste | two logcat lines, subtracted | the subtraction crossed two different prompts; irreproducible from any rendering of the source |
+| tool RESULT payloads are the dominant recoverable term | they genuinely dominate the tail by size | each result is evaluated exactly once under both layouts — they were never recoverable |
+| the working tree already had `n_predict: 0` | a subagent reported it | it did not; the tree was being edited concurrently. A source citation is checkable forever, a state claim is true for an instant |
+
+None of those retractions cost much, because each was caught within an hour by
+a second pair of eyes checking the primary source. All four would have been
+expensive if they had been built on.
+
+**The practices that produced that, worth keeping:**
+
+- **Separate source claims from state claims.** A file:line citation can be
+  re-checked by anyone at any time. "The working tree currently has X" is true
+  for an instant and is worthless in a message read ten minutes later. Quote the
+  commit you read at.
+- **A negative result is a deliverable.** "Repack is 5.3x worse, do not re-run
+  this" saved more time than most of the positive findings. So did "selective
+  tool disclosure breaks even at 0.53 turns" and "widening this would reintroduce
+  narrate-instead-of-act".
+- **Prove the test can fail.** Every gate added here was checked by deliberately
+  reintroducing the bug it guards — the no-tool teachings one at a time, the UTC
+  date, a clock leaking into the stable prefix, the model-catalog ratchet three
+  separate ways. This project's own Phase 0 lesson is that a fixture which
+  cannot reproduce a known bug is not yet a gate.
+- **Distinguish "biggest term" from "biggest recoverable term".** Two people
+  independently got this wrong about tool results.
+- **A green suite is not permission.** Three prompt rules were removed, the eval
+  stayed 79/79, every guard stayed green, and the removal was still wrong. The
+  corpus replays scripted responses; it cannot see what a real model would do.
