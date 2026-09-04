@@ -68,14 +68,73 @@ describe('skipsPlanning', () => {
     }
   });
 
+  // THE REGRESSION THAT KILLED THE FIRST DESIGN, pinned as a CLASS.
+  //
+  // The bag-of-words gate accepted any sentence built from safe words as long
+  // as one was an anchor — so a greeting donated the anchor and an arbitrary
+  // question rode along behind it. These are not just the two sentences that
+  // were reported; the shape is "greeting + question made of innocent words",
+  // and a future widening of PHRASES must not reopen it.
+  it('never lets a greeting carry a question past the gate', () => {
+    const greetings = ['hey', 'hi', 'hello', 'ok', 'morning', 'thanks', 'cool'];
+    const questions = [
+      'how much work is there today',
+      'how is work going',
+      'how much is there',
+      'is there much on today',
+      'what is on today',
+      'how long is it',
+      'are we done for the day',
+      'how much time do i have',
+    ];
+    for (const g of greetings) {
+      for (const q of questions) {
+        // The question alone must plan...
+        expect(skipsPlanning(q), q).toBe(false);
+        // ...and prefixing it with a pleasantry must not change that.
+        for (const joined of [`${g} ${q}`, `${g}, ${q}`, `${g}! ${q}?`]) {
+          expect(skipsPlanning(joined), joined).toBe(false);
+        }
+      }
+    }
+  });
+
+  // The specific sentences that were observed, kept alongside the class so a
+  // failure names something concrete.
+  it('plans the exact sentences that defeated the vocabulary gate', () => {
+    expect(skipsPlanning('hey how much work is there today')).toBe(false);
+    expect(skipsPlanning('ok so how is work going')).toBe(false);
+  });
+
+  // A pleasantry followed by another pleasantry is still a pleasantry — this is
+  // what makes phrase composition safe where word composition was not.
+  it('accepts sequences of whole pleasantries', () => {
+    for (const msg of [
+      'Morning! How are you doing today?',
+      'Perfect, thanks — that is all for now',
+      'ok cool thanks',
+      'thanks, that was perfect',
+      'Alright, goodnight',
+    ]) {
+      expect(skipsPlanning(msg), msg).toBe(true);
+    }
+  });
+
   it('is not fooled by digits or length', () => {
     expect(skipsPlanning('hi 7')).toBe(false);
     expect(skipsPlanning('thanks '.repeat(20))).toBe(false);
   });
 
-  it('needs an anchor, not just filler', () => {
+  // Named for the old "anchor word" rule, which no longer exists — the property
+  // survives it: a near-miss of a listed phrase is not a phrase, and the whole
+  // message must match end to end. "that is all for now" is listed; the
+  // interrogative "is that all for now" is not, and neither is "how is it
+  // going" with a stray word hung off it.
+  it('rejects near-misses of a listed phrase', () => {
     expect(skipsPlanning('is that all for now')).toBe(false);
     expect(skipsPlanning('how is it going today')).toBe(false);
+    expect(skipsPlanning('thanks for the alarm')).toBe(false);
+    expect(skipsPlanning('good morning what is on')).toBe(false);
   });
 
   it('ignores empty and whitespace input', () => {
