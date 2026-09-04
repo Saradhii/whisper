@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
+import { realTools } from './__fixtures__/tools';
 import { renderExamples, WORKED_EXAMPLES } from './examples';
 import {
   answerNote,
@@ -13,8 +14,7 @@ import {
   toolPromptReserve,
   turnReference,
 } from './prompt';
-import { TOOL_DEFS } from './toolDefs';
-import { defineTool, paramsToJsonSchema, type AnyTool } from './types';
+import { defineTool, type AnyTool } from './types';
 
 /** ~3.5 chars per token, the same estimate historyBudget.ts uses. */
 const estimateTokens = (chars: number) => Math.ceil(chars / 3.5);
@@ -28,15 +28,7 @@ const tool = (name: string, params: z.ZodObject<z.ZodRawShape> = z.object({})): 
     execute: async () => 'ok',
   });
 
-/** Every declared tool, built straight from the pure declarations — no Expo,
- *  so the shipped catalog is measurable in Node. */
-const realTools: AnyTool[] = Object.entries(TOOL_DEFS).map(([name, d]) => ({
-  name,
-  description: d.description,
-  jsonSchema: paramsToJsonSchema(d.params),
-  label: () => name,
-  run: async () => '',
-}));
+
 
 describe('toolCatalog', () => {
   it('shows each argument description to the model', () => {

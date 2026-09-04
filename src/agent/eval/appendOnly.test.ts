@@ -9,8 +9,8 @@ import {
   systemPrompt,
   turnReference,
 } from '@/src/agent/prompt';
-import { TOOL_DEFS } from '@/src/agent/toolDefs';
-import { defineTool, paramsToJsonSchema, type AnyTool } from '@/src/agent/types';
+import { realTools } from '@/src/agent/__fixtures__/tools';
+import { defineTool, type AnyTool } from '@/src/agent/types';
 import type { AgentMessage, ChatMessage, Engine } from '@/src/engines/types';
 
 import { divergence, formatSize, MESSAGE_TEMPLATE_CHARS, promptSize } from './promptSize';
@@ -66,13 +66,7 @@ const TOOLS = [
 /** The shipped registry, built from the pure declarations. Used only to size
  *  the system prompt honestly: three fake tools would under-state it by ~4000
  *  characters and make the composition table a fiction. */
-const REAL_TOOLS: AnyTool[] = Object.entries(TOOL_DEFS).map(([name, d]) => ({
-  name,
-  description: d.description,
-  jsonSchema: paramsToJsonSchema(d.params),
-  label: () => name,
-  run: async () => '',
-}));
+const REAL_TOOLS: AnyTool[] = realTools;
 
 const call = (tool: string, q: string) => JSON.stringify({ tool, arguments: { q } });
 const RESPOND = '{"respond": true}';

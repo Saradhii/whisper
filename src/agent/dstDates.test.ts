@@ -6,19 +6,10 @@
 // tested, has no DST, which is exactly why the bug below survived.
 import { describe, expect, it } from 'vitest';
 
+import { realTools } from './__fixtures__/tools';
 import { legacyPlanNote, systemPrompt, turnReference } from './prompt';
-import { TOOL_DEFS } from './toolDefs';
-import { paramsToJsonSchema, type AnyTool } from './types';
 
 process.env.TZ = 'America/New_York';
-
-const realTools: AnyTool[] = Object.entries(TOOL_DEFS).map(([name, d]) => ({
-  name,
-  description: d.description,
-  jsonSchema: paramsToJsonSchema(d.params),
-  label: () => name,
-  run: async () => '',
-}));
 
 /**
  * The rendered date table, from whichever message currently carries it.
