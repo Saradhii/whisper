@@ -13,7 +13,20 @@ import type { Scenario, ScoreReport, TurnScore } from '../types';
 
 /** Tags whose scores are called out individually, in this order. Everything
  *  else is folded into the overall row only. */
-export const HEADLINE_TAGS = ['dates', 'no-tool', 'multistep', 'suppression', 'refusal'] as const;
+export const HEADLINE_TAGS = [
+  'dates',
+  'no-tool',
+  // `guarded` is the subset of `no-tool` whose SCRIPT is keyed to a specific
+  // sentence in the rendered prompt, so that deleting the teaching turns the
+  // replay corpus red. In a REAL run the script is unused and the scenario is
+  // simply "the planner must not reach for a tool here" — which is the exact
+  // question left open by "the prompt was fixed, but nothing verified it
+  // against a model". It gets its own row for that reason.
+  'guarded',
+  'multistep',
+  'suppression',
+  'refusal',
+] as const;
 
 export type Metrics = {
   turns: number;
