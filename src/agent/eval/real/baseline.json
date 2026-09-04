@@ -1,0 +1,55 @@
+{
+  "model": "qwen3-1.7b-q4km.gguf",
+  "ablation": "none",
+  "recordedAt": "2026-09-04T19:50:23.468Z",
+  "overall": {
+    "turns": 82,
+    "completed": 47,
+    "toolCorrect": 69,
+    "argsCorrect": 66,
+    "callsCorrect": 54,
+    "answerCorrect": 69
+  },
+  "groups": {
+    "dates": {
+      "turns": 15,
+      "completed": 6,
+      "toolCorrect": 13,
+      "argsCorrect": 9,
+      "callsCorrect": 8,
+      "answerCorrect": 14
+    },
+    "no-tool": {
+      "turns": 19,
+      "completed": 15,
+      "toolCorrect": 15,
+      "argsCorrect": 19,
+      "callsCorrect": 15,
+      "answerCorrect": 18
+    },
+    "multistep": {
+      "turns": 8,
+      "completed": 2,
+      "toolCorrect": 3,
+      "argsCorrect": 8,
+      "callsCorrect": 3,
+      "answerCorrect": 5
+    },
+    "suppression": {
+      "turns": 5,
+      "completed": 2,
+      "toolCorrect": 3,
+      "argsCorrect": 5,
+      "callsCorrect": 3,
+      "answerCorrect": 3
+    },
+    "refusal": {
+      "turns": 4,
+      "completed": 3,
+      "toolCorrect": 4,
+      "argsCorrect": 3,
+      "callsCorrect": 3,
+      "answerCorrect": 4
+    }
+  }
+}
