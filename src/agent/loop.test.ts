@@ -75,7 +75,14 @@ describe('runAgent (grammar-constrained)', () => {
     // phase was removed after it started overriding correct decisions.
     const { engine, seen } = fakeEngine(['{"respond": true}', 'hi there']);
     const events: AgentEvent[] = [];
-    await runAgent(engine, [echoTool], [{ role: 'user', content: 'hi' }], cb(events));
+    // Not a pleasantry: a bare "hi" now takes the conversational fast path and
+    // never reaches the planner, which would make this assert nothing.
+    await runAgent(
+      engine,
+      [echoTool],
+      [{ role: 'user', content: 'what is the capital of France' }],
+      cb(events),
+    );
     expect(seen[0]!.grammar).toBe(true); // decision
     expect(finalTurn(seen)).toHaveLength(1); // exactly one unconstrained turn
     expect(events).toContainEqual({ type: 'token', token: 'hi there' });
@@ -92,7 +99,8 @@ describe('runAgent (grammar-constrained)', () => {
   it('puts the wall clock in the planning turn, not the cached system prefix', async () => {
     const { engine, seen } = fakeEngine(['{"respond": true}', 'hi']);
     const at = new Date('2026-08-02T09:30:00Z');
-    await runAgent(engine, [echoTool], [{ role: 'user', content: 'hi' }], cb([]), at);
+    // See above: the message must be one that still plans.
+    await runAgent(engine, [echoTool], [{ role: 'user', content: 'what is the score' }], cb([]), at);
     const system = seen[0]!.messages[0]!;
     expect(system.role).toBe('system');
     expect(system.content).toContain('2026-08-02');
@@ -101,7 +109,7 @@ describe('runAgent (grammar-constrained)', () => {
     expect(note.content).toMatch(/Reference, not a request/);
     expect(note.content).toContain('Sunday');
     // …and the user's own words are repeated last, next to the decision.
-    expect(note.content).toContain('"hi"');
+    expect(note.content).toContain('"what is the score"');
   });
 
   it('emits a plan event for every decision', async () => {
@@ -448,6 +456,33 @@ describe('runAgent repeat suppression', () => {
 });
 
 describe('runAgent answering', () => {
+  it('skips the planning generation entirely for a pleasantry', async () => {
+    // The conversational fast path. Planning "hi" cost a 305-token re-prefill
+    // (8.1s on the test AVD) to emit {"respond": true} — two thirds of the
+    // turn — so a message that is certainly conversation goes straight to the
+    // answer. Only ONE generation should reach the engine, and it must be the
+    // unconstrained one.
+    const { engine, seen } = fakeEngine(['Hello! How can I help?']);
+    const events: AgentEvent[] = [];
+    await runAgent(engine, [echoTool], [{ role: 'user', content: 'hi' }], cb(events));
+    expect(planning(seen)).toHaveLength(0); // no grammar-constrained decision
+    expect(finalTurn(seen)).toHaveLength(1);
+    expect(events.some((e) => e.type === 'tool')).toBe(false);
+    expect(events).toContainEqual({ type: 'token', token: 'Hello! How can I help?' });
+  });
+
+  it('still plans when the message only looks conversational', async () => {
+    // A greeting with a request stapled to it is a request.
+    const { engine, seen } = fakeEngine(['{"respond": true}', 'Nothing today.']);
+    await runAgent(
+      engine,
+      [echoTool],
+      [{ role: 'user', content: 'morning! anything on my calendar' }],
+      cb([]),
+    );
+    expect(planning(seen)).toHaveLength(1);
+  });
+
   it('accepts a decision to answer instead of forcing a tool behind it', async () => {
     // There was a recovery phase here that re-planned under a grammar with no
     // `respond` alternative whenever a yes/no probe thought the user had asked
@@ -456,7 +491,14 @@ describe('runAgent answering', () => {
     // A decision to answer is now final.
     const { engine, seen } = fakeEngine(['{"respond": true}', 'Sure thing.']);
     const events: AgentEvent[] = [];
-    await runAgent(engine, [echoTool], [{ role: 'user', content: 'thanks!' }], cb(events));
+    // "thanks!" itself is fast-pathed now; use a message that still plans so
+    // the assertion about the decision being final is actually exercised.
+    await runAgent(
+      engine,
+      [echoTool],
+      [{ role: 'user', content: 'do you think I should learn Kannada first' }],
+      cb(events),
+    );
     expect(forcedPlan(seen)).toHaveLength(0);
     expect(events.some((e) => e.type === 'tool')).toBe(false);
     expect(planning(seen)).toHaveLength(1); // one decision, no probe

@@ -12,11 +12,17 @@
 //
 // What the loop says to the model lives in prompt.ts; this file is only about
 // when. Pure orchestration (engine + tools injected) so it unit-tests in Node.
-import type { AgentMessage, ChatMessage, Engine } from '@/src/engines/types';
+import type {
+  AgentMessage,
+  ChatMessage,
+  Engine,
+  GenerateTimings,
+} from '@/src/engines/types';
 
 import * as Recorder from './eval/recorder';
 import { buildToolGrammar, parseDecision } from './grammar';
-import { answerNote, planNote, systemPrompt } from './prompt';
+import { skipsPlanning } from './fastPath';
+import { agentPrefix, answerNote, planNote } from './prompt';
 import * as Trace from './trace';
 import { InvalidArguments, type AnyTool } from './types';
 
@@ -152,6 +158,23 @@ function signature(name: string, args: Record<string, unknown>): string {
   return `${name}${stable(args)}`;
 }
 
+/**
+ * llama.cpp's own numbers for one generation, condensed for a trace row.
+ * `cached` is the one that matters: it says how much of the prompt was reused
+ * rather than re-evaluated, which is the difference between a turn that is
+ * slow because it is thinking and one that is slow because it threw away a
+ * prefix it already had.
+ */
+function timingLabel(t?: GenerateTimings): string {
+  if (!t) return '';
+  const pps = t.promptMs > 0 ? Math.round((t.promptTokens / t.promptMs) * 1000) : 0;
+  const tps = t.predictedMs > 0 ? Math.round((t.predictedTokens / t.predictedMs) * 1000) : 0;
+  return (
+    ` [cache ${t.cached} | prefill ${t.promptTokens}tok ${t.promptMs}ms ${pps}t/s` +
+    ` | decode ${t.predictedTokens}tok ${t.predictedMs}ms ${tps}t/s]`
+  );
+}
+
 export async function runAgent(
   engine: Engine,
   tools: AnyTool[],
@@ -165,10 +188,7 @@ export async function runAgent(
   const byName = new Map(tools.map((t) => [t.name, t]));
   const names = tools.map((t) => t.name);
   const grammar = buildToolGrammar(names);
-  const messages: AgentMessage[] = [
-    { role: 'system', content: systemPrompt(tools, now) },
-    ...history,
-  ];
+  const messages: AgentMessage[] = [...agentPrefix(tools, now), ...history];
 
   // Corpus capture for the eval harness (eval/recorder.ts). Off by default and
   // a no-op until the user turns it on; the loop never branches on it, so the
@@ -197,6 +217,9 @@ export async function runAgent(
 
   const aborted = () => !!signal?.aborted;
 
+  // Timings of the most recent generation, folded into its trace row.
+  let planTimings: GenerateTimings | undefined;
+
   /** One grammar-constrained planning turn. */
   const plan = async (g: string) => {
     const started = Date.now();
@@ -208,6 +231,7 @@ export async function runAgent(
       temperature: PLAN_TEMPERATURE,
     });
     const ms = Date.now() - started;
+    planTimings = res.timings;
     Recorder.generation(
       'plan',
       prompt,
@@ -345,14 +369,20 @@ export async function runAgent(
     // the grammar isn't constraining the sampler, which is a different (and
     // much worse) problem than the model choosing to answer.
     if (decision.kind === 'tool') {
-      Trace.add('plan', `${forced ? 'forced ' : ''}call ${decision.name}`, { detail: res.text, ms });
+      Trace.add('plan', `${forced ? 'forced ' : ''}call ${decision.name}${timingLabel(planTimings)}`, {
+        detail: res.text,
+        ms,
+      });
     } else if (decision.malformed) {
       Trace.add('error', 'undecodable decision — grammar may not be applied', {
         detail: res.text,
         ms,
       });
     } else {
-      Trace.add('plan', 'respond without acting', { detail: res.text, ms });
+      Trace.add('plan', `respond without acting${timingLabel(planTimings)}`, {
+        detail: res.text,
+        ms,
+      });
     }
     if (decision.kind === 'respond') return false;
 
@@ -360,12 +390,23 @@ export async function runAgent(
   };
 
   // --- plan: constrained decisions, no streaming (the output is control JSON) -
-  for (let i = 0; i < MAX_STEPS; i++) {
-    if (aborted()) {
-      Recorder.abandon(); // a cancelled turn never answered; it is not a trajectory
-      return;
+  //
+  // A greeting is not a decision. Planning "hi" costs a 305-token re-prefill
+  // (8.1s on the test AVD) to emit {"respond": true}, which is two thirds of
+  // the whole turn — so a message that is certainly just conversation goes
+  // straight to the answer. The gate is a closed pleasantry vocabulary and
+  // fails toward planning; see fastPath.ts for why it is built that way, and
+  // fastPath.test.ts for the property that keeps it honest.
+  if (skipsPlanning(lastRequest)) {
+    Trace.add('plan', 'skipped planning — conversational turn', { detail: lastRequest, ms: 0 });
+  } else {
+    for (let i = 0; i < MAX_STEPS; i++) {
+      if (aborted()) {
+        Recorder.abandon(); // a cancelled turn never answered; it is not a trajectory
+        return;
+      }
+      if (!(await step(i, grammar))) break;
     }
-    if (!(await step(i, grammar))) break;
   }
 
   // There used to be a "recover" phase here: when the planner chose not to act,
@@ -433,7 +474,7 @@ export async function runAgent(
     return;
   }
 
-  Trace.add('answer', `answered after ${ran} tool call(s)`, {
+  Trace.add('answer', `answered after ${ran} tool call(s)${timingLabel(res.timings)}`, {
     detail: `${(streamed || res.text).trim().length} chars`,
     ms: Date.now() - started,
   });

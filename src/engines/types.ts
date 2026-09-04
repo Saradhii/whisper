@@ -40,7 +40,28 @@ export type GenerateOptions = {
   temperature?: number;
 };
 
-export type GenerateResult = { text: string; toolCalls: ToolCall[] };
+/**
+ * llama.cpp's own accounting for one completion, surfaced so latency can be
+ * attributed instead of guessed. The decisive field is `cached`: a turn that
+ * feels slow because it re-prefills a prompt it should have reused looks
+ * identical from the outside to one that is simply generating a lot.
+ */
+export type GenerateTimings = {
+  /** Prompt tokens reused from the KV cache (not re-evaluated). */
+  cached: number;
+  /** Prompt tokens actually evaluated this call, and what that cost. */
+  promptTokens: number;
+  promptMs: number;
+  /** Tokens generated, and what that cost. */
+  predictedTokens: number;
+  predictedMs: number;
+};
+
+export type GenerateResult = {
+  text: string;
+  toolCalls: ToolCall[];
+  timings?: GenerateTimings;
+};
 
 /** Local absolute paths (no file:// prefix) of a downloaded model's files. */
 export type ModelFiles = { model: string; mmproj?: string };
@@ -59,6 +80,22 @@ export interface Engine {
     onToken: (token: string) => void,
     opts?: GenerateOptions,
   ): Promise<GenerateResult>;
+  /**
+   * Evaluate `messages` into the KV cache and throw the output away, so the
+   * next real turn reuses the prefix instead of building it.
+   *
+   * This exists because the agent's cost is almost entirely PREFILL, and the
+   * whole of it used to land on the user's first message: measured on the test
+   * AVD, turn one evaluated 2333 prompt tokens at 63 tok/s — 37.2 of the 41.2
+   * second turn — to emit a five-token decision. The ~1736-token system
+   * message (tool catalog + worked examples) is known the moment the model
+   * loads, so there is no reason for a person to wait for it.
+   *
+   * Best-effort by contract: a failure here must never surface to the user or
+   * block a turn, because nothing is wrong if it doesn't run — the next
+   * generate() simply pays what it pays today.
+   */
+  prewarm?(messages: AgentMessage[]): Promise<void>;
   /** Count tokens with the loaded model's tokenizer (for context budgeting). */
   countTokens?(text: string): Promise<number>;
   /** Interrupt the in-flight generation. */

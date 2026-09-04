@@ -33,7 +33,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { parseDecision } from '@/src/agent/grammar';
 import { runAgent, type AgentEvent } from '@/src/agent/loop';
-import { TOOL_PROMPT_RESERVE } from '@/src/agent/prompt';
+import { agentPrefix, TOOL_PROMPT_RESERVE } from '@/src/agent/prompt';
 import { TOOLS } from '@/src/agent/tools';
 import * as Trace from '@/src/agent/trace';
 import Composer from '@/src/chat/Composer';
@@ -223,6 +223,14 @@ export default function Chat() {
       .then(() => {
         if (cancelled) return;
         setLoadState({ id: spec.id });
+        // Evaluate the agent's system message into the KV cache NOW, while the
+        // user is still looking at an empty chat. It is ~1736 tokens of tool
+        // catalog and worked examples, it is identical for every turn today,
+        // and until this ran it was evaluated for the first time inside the
+        // user's first message — measured at 37.2s of a 41.2s opening turn.
+        // Best-effort and unawaited: if it fails or the user sends first, the
+        // turn just pays what it used to.
+        void engineFor(spec).prewarm?.(agentPrefix(TOOLS));
         // First load of an uncensored model → run the canary self-test in the
         // background (does not block chat; result drives the header badge).
         void ensureVerified(spec);
@@ -441,6 +449,7 @@ export default function Chat() {
         const answer = splitThinking(lastBubbleTextRef.current).answer;
         if (answer) void Tts.speak(answer, tts.voiceSid);
       }
+
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setMessages((prev) => [...prev, { id: uid(), role: 'assistant', content: msg, error: true }]);

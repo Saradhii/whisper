@@ -112,6 +112,18 @@ export function systemPrompt(tools: AnyTool[], now: Date): string {
 }
 
 /**
+ * The stable head of every agent turn, as its own message list.
+ *
+ * Exists so the prewarm and the real turn are built by the SAME code: a
+ * prewarm that renders even one byte differently warms a prefix llama.cpp
+ * will not match, and the failure is silent — the turn is simply as slow as it
+ * always was, with nothing to show that the optimization stopped working.
+ */
+export function agentPrefix(tools: AnyTool[], now: Date = new Date()): AgentMessage[] {
+  return [{ role: 'system', content: systemPrompt(tools, now) }];
+}
+
+/**
  * The trailing instruction for a planning turn: the wall clock the system
  * prompt deliberately omits, plus what has already run this turn.
  *

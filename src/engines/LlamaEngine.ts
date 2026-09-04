@@ -31,6 +31,19 @@ let context: LlamaContext | null = null;
 let loadedSpec: ModelSpec | null = null;
 let loadedFiles: ModelFiles | null = null;
 
+// True while a prewarm completion is in flight, so a real generate() can cut
+// it short instead of queueing behind it.
+let prewarming = false;
+// Set by generate() to tell a running prewarm to stop at its next chunk.
+let prewarmAbort = false;
+
+/**
+ * How much of the prompt each prewarm slice adds. ~390 Qwen3 tokens, which is
+ * ~8s of prefill on the test AVD and well under a second on a phone — the
+ * worst case a user can wait for speculative work they did not ask for.
+ */
+const PREWARM_CHUNK_CHARS = 1500;
+
 // Set while suspended: the model to restore on the next generate()/resume().
 let suspendedSpec: ModelSpec | null = null;
 let suspendedFiles: ModelFiles | null = null;
@@ -369,9 +382,21 @@ async function doGenerate(
     },
   );
 
+  const t = result.timings;
   return {
     text: result.text.trim(),
     toolCalls: normalizeToolCalls(result.tool_calls),
+    ...(t
+      ? {
+          timings: {
+            cached: t.cache_n ?? 0,
+            promptTokens: t.prompt_n ?? 0,
+            promptMs: Math.round(t.prompt_ms ?? 0),
+            predictedTokens: t.predicted_n ?? 0,
+            predictedMs: Math.round(t.predicted_ms ?? 0),
+          },
+        }
+      : {}),
   };
 }
 
@@ -381,9 +406,67 @@ export const LlamaEngine: Engine = {
   },
 
   generate(messages, onToken, opts) {
+    // A real turn outranks speculative work: ask any in-flight prewarm to stop
+    // at its next chunk boundary. Without this the user waits for the whole
+    // prewarm first — measured on the test AVD as a 123s opening turn against
+    // 58s with no prewarm at all, which is the opposite of the point.
+    //
+    // stopCompletion() is NOT enough on its own, and that is the whole reason
+    // prewarm is chunked: it stops token GENERATION, and a prewarm is almost
+    // entirely prompt EVALUATION, which llama.cpp will not abandon part-way.
+    // Chunking is what bounds the wait to one chunk instead of the full warm.
+    prewarmAbort = true;
+    if (prewarming) void context?.stopCompletion();
     return enqueue(async () => {
       await doResume(); // transparent wake-up if the app was backgrounded
       return doGenerate(messages, onToken, opts);
+    });
+  },
+
+  prewarm(messages) {
+    prewarmAbort = false;
+    return enqueue(async () => {
+      if (!context) return; // nothing loaded (or unloaded while we queued)
+      prewarming = true;
+      try {
+        // Warm in slices of the final message, each completion extending the
+        // cached prefix the previous one left behind. One shot would be fewer
+        // calls, but it would also be UNINTERRUPTIBLE: prompt evaluation runs
+        // to completion inside llama.cpp, so a user who sends mid-warm would
+        // wait out the entire remaining prefill. Chunking caps that wait at one
+        // slice, which is the difference between a prewarm that helps and one
+        // that makes the first message slower than having no prewarm at all.
+        const last = messages[messages.length - 1];
+        if (!last) return;
+        const full = last.content;
+        for (let end = PREWARM_CHUNK_CHARS; ; end += PREWARM_CHUNK_CHARS) {
+          if (prewarmAbort) return; // a real turn is waiting — drop the rest
+          const sliced = [
+            ...messages.slice(0, -1),
+            { ...last, content: full.slice(0, end) },
+          ];
+          // n_predict 1, not 0, DESPITE llama.rn documenting 0 as exactly this
+          // operation ("no tokens will be generated but the prompt is evaluated
+          // into the cache"; -1 is the infinite one). Measured on the test AVD:
+          // with 1, a cold turn's prefill fell from 2333 tokens to 597 and 672
+          // on two runs; with 0 and a longer settle it was 2722 — i.e. the
+          // cache came back EMPTIER than with no prewarm at all. One noisy
+          // sample against two consistent ones, so this keeps the value that
+          // demonstrably works. Worth re-testing with context.bench() on a
+          // quiet machine; if 0 does populate the cache it saves one token.
+          await context.completion({
+            messages: sliced as RNLlamaOAICompatibleMessage[],
+            n_predict: 1,
+            temperature: 0,
+            ...(loadedSpec?.stop ? { stop: loadedSpec.stop } : {}),
+          });
+          if (end >= full.length) break;
+        }
+      } catch {
+        // Best-effort: a warm cache is an optimization, never a requirement.
+      } finally {
+        prewarming = false;
+      }
     });
   },
 
