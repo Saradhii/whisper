@@ -791,3 +791,75 @@ questions ("my", "our", "mine" + every noun the tool catalog can reach), with
 zero skips on any of them, and a measured false-skip rate of zero across at
 least a few hundred real user messages. Until that exists the honest position is
 that this gap closes by making the planning turn cheaper, not by skipping it.
+
+---
+
+## The real-model harness, and what it found
+
+`npm run eval:real` runs the actual Qwen3-1.7B-Q4_K_M with the actual GBNF
+grammar against the actual rendered prompts, driving the *same* 78-scenario
+corpus through the *same* `runAgent`. 82 turns in ~90s on Metal. It is not
+wired into `npm run check` — it needs a multi-GB model — and skips with
+instructions when the GGUF is absent.
+
+**Accuracy transfers between machines; latency does not.** Same weights, same
+grammar, same prompt bytes produce the same decisions anywhere. Never quote a
+timing from this harness.
+
+### The sentence that reframes the whole campaign
+
+**The replay corpus scores 100%. The real model scores 66%.**
+
+Every "eval stayed green" in this document means the *harness* did not regress.
+It never meant the model was right. The fixture emits scripted decisions, so a
+green run asserts the script back at itself — which is exactly what the Phase 0
+`assertProducible()` story in `roadmap.md` warned about, one level up.
+
+This does not make the replay corpus useless: it is a good regression test for
+harness structure, and it caught real bugs tonight. It means the two suites
+answer different questions and only one of them is about the model.
+
+### Variance is zero, so ±1 is signal
+
+Three separate process launches at one seed produced byte-identical scores, and
+two seeds agree exactly on the subsets. Planning is greedy at temperature 0; the
+answer phase is pinned by seed.
+
+### The gate can fail, deliberately proved
+
+`WHISPER_EVAL_ABLATION=anchors` strips the date table and relative-time anchors
+at the engine boundary — never by editing `prompt.ts`. On the `dates` subset:
+call-ok 8→7, args 9→8, completed 6→5. Against the pre-A1 prompt the same
+ablation moved tool-correct 14→12 and produced visibly wrong dates:
+`cal-create-friday-1pm` off by a day, `rem-in-an-hour` returning 13:05,
+`cal-list-weekend` refusing outright with "I don't have access to your calendar".
+
+### Open, and blocking: A1 costs date accuracy
+
+A/B'd through `legacyPlanNote()` — same scenarios, same seed, only the layout
+differing — the pre-A1 layout scores **+5 call-ok and +6 completed over 82
+turns**. One flipping scenario is identified and cleanly explained:
+`cal-list-named-weekday`, "What have I got on Monday?" asked on a Wednesday,
+returns the correct single day under the old layout and the whole week under A1.
+That is the documented named-weekday failure class, caused by the date table
+moving away from the decision point. A pure salience effect.
+
+**The remedy under test is not a revert.** A1 bundled two independent changes:
+the append-only turn structure (where the 60% saving lives, unindicted) and
+moving the date table into the system prefix (what the evidence indicts).
+Configuration C — append-only structure, date table back in `turnReference` — is
+being measured three-way. If it matches legacy on dates it is strictly best,
+because a date-independent prefix also makes the KV snapshot permanent and
+removes the 42-second midnight cliff. Its price is ~49 est tokens per turn on
+the TTFT path.
+
+### Two more real bugs it found
+
+- **`toolCatalog()` drops JSON-schema `enum`.** `search_phone_media.media_type`
+  reaches the model as `media_type?: string` with no allowed values, so it emits
+  `"photos"`, zod rejects, and the loop burns an extra plan-execute cycle. ~5
+  turns. Identical in class to the `.describe()` bug already documented in
+  `prompt.ts` — a schema field written, tested, and never shown to the model.
+- **`rem-in-an-hour` is live today.** "in an hour" at 13:09 returns minute 0
+  (14:00, not 14:09) *with* the relative-time anchors present. The signature bug
+  this project has fought for months is not fixed.
