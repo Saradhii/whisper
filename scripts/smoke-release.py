@@ -80,6 +80,29 @@ def back():
     time.sleep(2)
 
 
+def goto_chat(tries=6):
+    """Return a dump of the chat screen, whatever screen we are on now.
+
+    Deliberately state-INDEPENDENT. Earlier versions counted BACK presses, or
+    re-issued the root deep link; both couple this step to how the previous
+    check happened to leave the app (drawer open, Models pushed, or the task
+    resumed on its old route), and each failed a check about the APP on a detail
+    of the SCRIPT. Press BACK until the composer is there, and relaunch if we
+    fall out of the app entirely.
+    """
+    for _ in range(tries):
+        xml = dump()
+        if "Ask anything" in xml:
+            return xml
+        if not sh("shell", "pidof", PKG).strip():   # backed out of the app
+            sh("shell", "am", "start", "-a", "android.intent.action.VIEW",
+               "-d", "whisper://", PKG)
+            time.sleep(6)
+            continue
+        back()
+    return dump()
+
+
 def main():
     apk = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_APK
     if not os.path.exists(apk):
@@ -131,30 +154,8 @@ def main():
     check("chat screen rendered", "Ask anything" in xml)
     check("header shows a model", bool(re.search(r'text="[^"]*(offline|tools)[^"]*"', xml)))
 
-    say("opening Models (exercises catalog reflection ProGuard may strip)")
-    menu = find(xml, "Menu: chats, settings and models")
-    models_ok = False
-    if menu:
-        sh("shell", "input", "tap", str(menu[0]), str(menu[1]))
-        time.sleep(2)
-        drawer = dump()
-        m = find(drawer, "Models")
-        if m:
-            sh("shell", "input", "tap", str(m[0]), str(m[1]))
-            time.sleep(4)
-            mx = dump()
-            # A stripped catalog renders an empty list, not a crash.
-            models_ok = "Qwen" in mx or "Gemma" in mx
-            check("Models screen lists the catalog", models_ok)
-            back()
-        else:
-            check("Models entry in drawer", False)
-        back()
-    else:
-        check("drawer menu found", False)
-
     say("one full turn (this needs a downloaded model; may take minutes)")
-    xml = dump()
+    xml = goto_chat()
     c = find(xml, "Ask anything")
     turn_ok = False
     if c:
@@ -176,6 +177,32 @@ def main():
               "" if turn_ok else "no reply within 10 min (is a model downloaded?)")
     else:
         check("composer available for a turn", False)
+
+    # AFTER the turn: this walks into the drawer and the Models screen, and the
+    # composer is not in the accessibility tree while the drawer is open. Doing
+    # it first made the turn check fail on where the previous check left the
+    # app rather than on anything about the app.
+    say("opening Models (exercises catalog reflection ProGuard may strip)")
+    menu = find(xml, "Menu: chats, settings and models")
+    models_ok = False
+    if menu:
+        sh("shell", "input", "tap", str(menu[0]), str(menu[1]))
+        time.sleep(2)
+        drawer = dump()
+        m = find(drawer, "Models")
+        if m:
+            sh("shell", "input", "tap", str(m[0]), str(m[1]))
+            time.sleep(4)
+            mx = dump()
+            # A stripped catalog renders an empty list, not a crash.
+            models_ok = "Qwen" in mx or "Gemma" in mx
+            check("Models screen lists the catalog", models_ok)
+            back()
+        else:
+            check("Models entry in drawer", False)
+        back()
+    else:
+        check("drawer menu found", False)
 
     # LAST, deliberately: the trace screen is reached by deep link and has no
     # back-stack to the chat — one BACK goes nowhere and two leave the app. Any
