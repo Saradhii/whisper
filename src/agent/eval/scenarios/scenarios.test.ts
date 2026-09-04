@@ -84,6 +84,25 @@ describe('coverage', () => {
     expect(noToolTurns.length).toBeGreaterThanOrEqual(10);
   });
 
+  // Weight is not the same as bite. A `noTool()` script emits {"respond": true}
+  // however the prompt reads, so those scenarios can never go red for a prompt
+  // reason — which is how the corpus scored 100% on `chat-known-fact` ("What's
+  // the capital of France?", calls: []) while the shipping app answered that
+  // exact question with `web_search` once and `search_contacts` the next time.
+  // Measured: with every piece of no-tool teaching reverted to what shipped, the
+  // old `noTool()` version of that scenario still passed. The `guarded` ones use
+  // `noToolUnlessTaught()` and each fails when the rule, tool description, or
+  // worked example it quotes leaves the prompt, so this count is the one that
+  // says how much of the no-tool group is actually a gate.
+  it('keeps a falsifiable core in the no-tool group', () => {
+    const guarded = ALL_SCENARIOS.filter((s) => s.tags.includes('guarded'));
+    expect(guarded.map((s) => s.id).length).toBeGreaterThanOrEqual(5);
+    // A guarded scenario that expected a call would be scoring something else.
+    for (const s of guarded) {
+      for (const turn of s.turns) expect(turn.expect.calls, s.id).toEqual([]);
+    }
+  });
+
   it('covers refusal and tool failure', () => {
     const refusals = ALL_SCENARIOS.filter((s) => s.turns.some((t) => t.confirmations.includes(false)));
     const failures = ALL_SCENARIOS.filter((s) => Object.keys(s.world.failing).length > 0);

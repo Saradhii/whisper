@@ -153,7 +153,14 @@ export const TOOL_DEFS = {
   }),
   // --- contacts & communication ---
   search_contacts: def({
-    description: 'Search the user contacts by name; returns names, phone numbers, emails.',
+    // "by name" was the whole discriminator, and "name" is ambiguous — the name
+    // of a thing reads as well as the name of a person. On the emulator this
+    // description won "what is the capital of France" over web_search: three
+    // tools in the catalog open with the word "Search", and nothing here said
+    // what this one is NOT for. Naming the argument type (a person) is the part
+    // that separates it from the other two.
+    description:
+      'Search the user contacts for a PERSON by name — never for a topic, a place, or a fact. Returns names, phone numbers, emails.',
     params: z.object({ query: z.string() }),
     label: (a) => `Search contacts for “${a.query}”`,
   }),
@@ -193,7 +200,14 @@ export const TOOL_DEFS = {
   }),
   // --- web ---
   web_search: def({
-    description: 'Search the web; returns top results with titles, URLs, and snippets.',
+    // "Search the web" describes the mechanism and says nothing about when it
+    // is the right call, so it was picked for questions the model could already
+    // answer ("capital of France", "a good stretch for lower back pain") — each
+    // one buying an extra plan/execute/prefill cycle for an answer it then gave
+    // from its own knowledge anyway. The condition belongs in the description,
+    // where it sits next to the name at the moment of choosing.
+    description:
+      'Search the web for facts you do NOT already know, or that change (news, prices, opening hours, live scores). Returns top results with titles, URLs, and snippets.',
     params: z.object({ query: z.string() }),
     label: (a) => `Search web: “${a.query}”`,
   }),

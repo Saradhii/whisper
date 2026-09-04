@@ -97,8 +97,14 @@ export function systemPrompt(tools: AnyTool[], now: Date): string {
     `- If no tool does what was asked — there is no way to delete or edit`,
     `  anything — say so plainly. Never substitute a tool that does something`,
     `  else, and never one that does the opposite of what was asked.`,
-    `- Do not call a tool to check on something you have just done, and do not`,
-    `  search the web for something you already know.`,
+    // The second half used to read "do not search the web for something you
+    // already know", and the planner went around it: asked "what is the capital
+    // of France" it called search_contacts, which is not the web. A rule that
+    // names one tool only forbids that tool, so this one names the property —
+    // a fact you already know — instead of the mechanism.
+    `- Do not call a tool to check on something you have just done. Never search`,
+    `  ANYTHING — the web, your contacts, your files — for a fact you already`,
+    `  know. Looking it up cannot make it more true, and it makes you slower.`,
     `- If the user denied an action, do not attempt it again.`,
     `- MOST turns need no tool at all. Greetings, thanks, small talk, opinions,`,
     `  follow-up chat, and any question you can answer from your own knowledge`,

@@ -22,6 +22,12 @@ const REPLAYABLE = ALL_SCENARIOS.filter((s) => s.script.length > 0);
 /**
  * Current scores, pinned. Written from an observed run, not from ambition.
  *
+ * They are absolute TURN COUNTS, not percentages, so ADDING scenarios buys
+ * slack unless the floor is raised with them: at 75/75 these were exact, and the
+ * four guarded no-tool scenarios took the corpus to 79 turns while leaving four
+ * turns free to regress unnoticed. Raise every count to the observed run, so one
+ * regressed turn reddens the build.
+ *
  * `meanSteps` is a CEILING and belongs here as much as the accuracy floors: a
  * harness change that keeps every answer correct while spending twice as many
  * planning turns to get there has made the app slower and hotter for nothing,
@@ -29,10 +35,10 @@ const REPLAYABLE = ALL_SCENARIOS.filter((s) => s.script.length > 0);
  * cheapest available proxy for the Phase 2 latency budget.
  */
 const FLOOR = {
-  completed: 75,
-  toolCorrect: 75,
-  argsCorrect: 75,
-  answerCorrect: 75,
+  completed: 79,
+  toolCorrect: 79,
+  argsCorrect: 79,
+  answerCorrect: 79,
   meanStepsCeiling: 2.2,
 } as const;
 

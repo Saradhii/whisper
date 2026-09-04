@@ -35,9 +35,11 @@ Everything else is capability on top of those two foundations.
 **Gate: no later phase merges without a green scored run.**
 
 Run it with `npm run eval` (score table) or `npm run check` (gate). Current:
-74 scenarios / 75 turns, 100% on completion, tool, args and answer, mean 1.95
+78 scenarios / 79 turns, 100% on completion, tool, args and answer, mean 1.82
 planning steps, 0 drift. The floors in `src/agent/eval/corpus.test.ts` are a
 ratchet — raise them when the harness improves, never lower one to green a build.
+They are absolute turn counts, so ADDING scenarios must raise them too, or the
+new turns are free to regress unnoticed.
 
 **Finding worth keeping.** The first acceptance run passed for the wrong reason.
 Reintroducing the old GBNF quoting bug failed only the pre-existing
@@ -50,6 +52,28 @@ fails 23 tests across 3 files. The general lesson for later phases: a fixture
 that cannot reproduce a known-shipped bug is not yet a gate, so every phase
 should re-run its own deliberate-regression check rather than trusting a green
 suite.
+
+**Second finding, same shape, 2026-09-05.** On the emulator the shipping app
+answered "what is the capital of France" with `web_search` on one turn and
+`search_contacts` on the next — a scan of the address book for a fact the model
+then stated from its own knowledge anyway, and an extra plan/execute/prefill
+cycle each time. The corpus already had the scenario: `chat-known-fact`, that
+exact question, `calls: []`. It scored green throughout, because a `noTool()`
+script emits `{"respond": true}` however the prompt reads — it asserts the script
+back at itself. Measured: with every piece of no-tool teaching reverted to what
+shipped, the old scenario still passed. So a no-tool scenario written that way
+pins the LOOP (nothing forces a tool where the planner chose none, which is the
+regression it was written for) and pins nothing about the prompt.
+
+`noToolUnlessTaught(guard, tempted, answer)` in `eval/scenarios/define.ts` is the
+falsifiable form: it scripts the planner observed on device — one that reaches
+for `tempted` unless `guard`, quoted from the rendered prompt, is there to stop
+it. Five scenarios tagged `guarded` use it, and each was confirmed to go red on
+its own when the rule, tool description, or worked example it quotes is removed.
+It proves the teaching cannot be deleted silently, which is the risk during a
+token-trimming pass; it does not prove a 1.7B model obeys it, which still needs a
+live run. Note that `expect.calls: []` was never the missing primitive — the
+missing primitive was a script that could produce a different answer.
 
 - Trajectory recorder behind the existing `devTrace` seam in `src/agent/trace.ts`;
   records plan decisions, tool calls with arguments, results, and timings as

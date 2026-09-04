@@ -74,6 +74,52 @@ export function noTool(answer: string): ScriptedResponse[] {
   ];
 }
 
+/**
+ * A no-tool turn scored against a planner that only gets it right while the
+ * prompt still TEACHES it.
+ *
+ * `noTool()` above scripts `{"respond": true}` unconditionally, so it passes
+ * whatever the prompt says — it asserts the script back at itself. That is how
+ * the corpus scored 100% on `chat-known-fact` ("What's the capital of France?",
+ * `calls: []`) while the shipping app answered that exact question with
+ * `web_search` on one turn and `search_contacts` on the next. The class was
+ * covered and unfalsifiable at the same time, which is the same failure mode as
+ * the first acceptance run passing a GBNF quoting bug because the fixture engine
+ * never read the grammar's CONTENT (see `assertProducible()` in engine.ts).
+ *
+ * So the planner scripted here is the one actually observed on device: it
+ * reaches for `tempted` on a question it could answer itself, UNLESS `guard` — a
+ * specific piece of teaching, quoted from the rendered prompt — is there to stop
+ * it. Delete the rule, the tool description, or the worked example that `guard`
+ * quotes and the scenario goes red with "unexpected extra call".
+ *
+ * What this proves, precisely: the teaching cannot be removed silently. It does
+ * NOT prove a 1.7B model obeys it — only a live run does that, which is why the
+ * `live-only` members of this group exist. The distinction matters because the
+ * pressure on this prompt right now is a token-trimming pass, and the worked
+ * examples are the obvious thing to cut.
+ *
+ * `guard` must be text that appears ONLY in the stable prefix. A phrase that
+ * also occurs in the user's own words would be echoed back by `planNote()` and
+ * match no matter what the system message says.
+ */
+export function noToolUnlessTaught(
+  guard: string,
+  tempted: string,
+  answer: string,
+): ScriptedResponse[] {
+  return [
+    { when: ANSWER, text: answer },
+    { when: guard, text: RESPOND },
+    // Reached only once the guard has gone out of the prompt.
+    { when: PLAN, text: tempted },
+    // …and then let the turn finish, so the score reads "unexpected extra call:
+    // web_search(…)", which names the regression, rather than "the fixture
+    // engine ran out of responses", which names the harness.
+    { when: PLAN, text: RESPOND },
+  ];
+}
+
 /** A turn with exactly one tool call: call, stop, answer. */
 export function oneCall(
   tool: string,

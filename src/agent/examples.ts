@@ -18,6 +18,11 @@
 //                    stop-after-one lesson doesn't overfit into never chaining.
 //   denial         — a refusal stays refused; never retry behind the user.
 //   no tool        — plain conversation must not reach for a tool at all.
+//   known fact     — OBSERVED: "what is the capital of France" drew a
+//                    web_search on one turn and a search_contacts on the next.
+//                    The three no-tool examples were all conversational or
+//                    advice-shaped; none of them was a plain FACTUAL question,
+//                    which is the shape that reads as "go and look it up".
 //
 // Pure module (no Expo, no engine) so the rendered prompt is unit-tested.
 import type { AnyTool } from './types';
@@ -132,7 +137,7 @@ export const WORKED_EXAMPLES: WorkedExample[] = [
       },
     ],
   },
-  // Three no-tool examples against six tool ones, because the balance itself
+  // Four no-tool examples against six tool ones, because the balance itself
   // teaches. With a single one, "Thanks that is all for now" was answered with
   // a web search for "current time" — the planner had been shown six ways to
   // call a tool and one way not to, and it took the hint.
@@ -146,6 +151,20 @@ export const WORKED_EXAMPLES: WorkedExample[] = [
     title: 'No tool needed — you already know this',
     tools: [],
     user: 'What is a good stretch for lower back pain?',
+    steps: [],
+  },
+  // The fourth, and the one the other three did not cover. "Lower back pain"
+  // is advice and "thanks" is small talk; a bare factual question looks like a
+  // lookup, and on the emulator "what is the capital of France" was answered
+  // twice with a tool call — web_search once, search_contacts the next time —
+  // before the model went on to answer it from its own knowledge anyway. Both
+  // replies were right by luck and both cost a whole extra plan/execute/prefill
+  // cycle. A transcript of a plain fact answered with no call is the thing that
+  // was missing; the rule for it was already in the prompt and did not hold.
+  {
+    title: 'No tool needed — a fact you already know',
+    tools: [],
+    user: 'Who wrote Hamlet?',
     steps: [],
   },
   {
