@@ -78,14 +78,21 @@ no app change — `adb logcat -d` while using the app produces it.
   start, to rebuild a byte-identical prefix.
 - **The cache is not broken.** One generation reused 2800 of 2914 tokens — 114
   evaluated — when the prompt genuinely extended the previous one.
-- **The layout defeats it.** In a real turn with history and tool calls, the plan
-  phase left a 2695-token prompt in the cache and the answer phase shared only
-  1975 of it: ~720 tokens discarded and rebuilt, twice in one turn, ~11s each at
-  67 t/s. The per-turn note sits *after* the history, so every phase change
-  invalidates everything from the note onward.
+- **The layout defeated it.** The per-turn note sat *after* the history, so it
+  was displaced by every decision and result the turn appended, and had to be
+  re-evaluated at every planning step. Fixed by A1; see the measured result
+  below.
 
-That last one is the largest recoverable cost in the app, and it is a
-TypeScript problem — no native work, no model change.
+**RETRACTED — a number that was in this document and was wrong.** An earlier
+version read "the plan phase left a 2695-token prompt in the cache and the
+answer phase shared only 1975 of it: ~720 tokens discarded and rebuilt, twice in
+one turn". The 720 came from subtracting an `n_past` reported by one generation
+from a `num_prompt_tokens` reported by a *different* generation. Those are two
+different prompts and the difference is not a quantity anyone can optimize. It
+could not be reproduced from any rendering of the source, and the honest
+conclusion is that there was never a missing 300 tokens to hunt for. The only
+figure worth quoting is the within-generation one: `num_prompt_tokens − n_past`,
+both read from the same completion.
 
 ## Settled questions (do not re-litigate)
 
@@ -183,8 +190,19 @@ Corollary, and the actual shape of the per-turn waste:
 The last plan's prompt is not a prefix of the answer's — they diverge exactly
 where the plan had `planNote` and the answer has `dec2`. The note is not in the
 answer prompt at all, so its SIZE is nearly irrelevant; its POSITION is the bug.
-On a turn that calls a tool, the dominant rebuilt term is the tool RESULT
-payload, not the note.
+
+**RETRACTED — "the tool result payload is the dominant rebuilt term, so shrink
+or reposition results."** Two of us reached that conclusion independently and it
+does not follow. Results DO dominate the tail by size, but each one is evaluated
+**exactly once** under both the old and the new layout: step *i+1* prefills
+`dec_i + res_i + note`, and step *i+2* prefills only `dec_{i+1} + res_{i+1} +
+note`. Results were never re-prefilled, so they were never recoverable. The note
+was always the only recoverable part — which is why A1 is worth 60% of a
+planning step and not more. Clamping results still matters for the context
+budget; it buys nothing in prefill.
+
+The general lesson: "biggest term in the tail" and "biggest recoverable term"
+are different questions, and only the second one is worth optimizing.
 
 ### Confirmed available, no patch needed
 
@@ -336,12 +354,90 @@ It is the same risk-inversion argument that keeps `fastPath.ts` a closed
 allowlist rather than a tool-keyword blocklist, and it applies with more force
 here because the fast path is opt-in per message and this would not be.
 
-**And it is not needed.** After A1, a warm turn's plan prefill is the delta only
-(the user's message plus a short trailing instruction), plan decode is five
-tokens, and the answer generation then EXTENDS the same prefix so its prefill is
-roughly just `answerNote`. That is on the order of 2.5s TTFT on the AVD and
-comfortably under a second on a phone — which meets the targets above without
-touching the constraint.
+**The decisive argument is that A3's benefit is concentrated exactly where its
+risk is.**
 
-Revisit only if A1 lands and measurably fails to reach the TTFT target, and even
-then prefer any design that keeps a forced structured decision.
+- On fast-pathed turns it is worth ZERO — those are already a single generation.
+- So it only pays on turns that plan. And of those, it pays most on the ones
+  that emit a tool call — which are precisely the turns where the grammar
+  constraint is the only thing standing between *setting* the alarm and *saying*
+  it set the alarm.
+
+Zero benefit where it is safe; benefit only where it is dangerous. That is a bad
+trade at any latency, and it does not depend on anything else landing.
+
+**A weaker argument was recorded here first and is withdrawn:** "A1 delivers
+most of A3's benefit". That is false. A1 and A3 attack different terms and are
+additive — A1 shrinks the PLAN's prefill, A3 would remove the ANSWER's prefill
+and the plan's decode. Landing A1 does not shrink A3's saving at all. Recording
+the wrong reason invites someone to reopen this in a month, correctly observe
+that A1 did not deliver it, and re-litigate a decision that was right for
+another reason.
+
+For the record, A3's honest value on the pre-A1 warm turn was ~2.6s of 12.1s: it
+removes the answer's prefill (2271ms) and the plan's decode (308ms), but not the
+answer's decode (1377ms, those tokens must be generated either way) and not the
+plan's prefill (the merged generation still evaluates the same prompt).
+
+**The safe route to the same win is widening the fast path**, where a wrong
+answer costs a slower turn instead of a silent lie, and where
+`fastPath.test.ts` can measure the failure rate before it ships.
+
+---
+
+## A1 landed — measured result
+
+Commit `10f9134`. Re-evaluated characters per generation, warm, system prefix
+cached. Both columns are rendered rather than recalled: the "before" column
+comes from `legacyPlanNote()`, which reproduces the replaced layout byte for
+byte and is pinned by a test, so the table regenerates on every CI run and
+cannot go stale.
+
+| turn | gens | before, total | after, total | change |
+|---|---|---|---|---|
+| 0-tool | 2 | 1182 chars | 1020 | −14% |
+| 1-tool | 3 | 2117 | 1407 | −34% |
+| 2-tool | 4 | 3027 | 1769 | −42% |
+| 3-tool | 5 | 3953 | 2147 | −46% |
+
+**The headline is the mid-turn planning step: 919 → 371 characters (~239 → ~96
+est tokens, 60% less), repeating once per step.**
+
+The layout is now
+`[system(+ date table), ...history, turnReference, (decision, result)*, planInstruction]`.
+Only the trailing instruction (70–159 chars) is displaced per step.
+
+`turnReference` sits AFTER the history, not before it as originally briefed.
+History is the largest stable region in the prompt — up to 1280 tokens — and a
+ticking clock ahead of it would move every byte of the conversation on every
+turn. That is ~110 characters against up to 1280 tokens: the same
+"position, not size" principle, applied where it actually pays.
+
+Evals identical before and after: 78 scenarios / 79 turns, 100% on completed,
+tool, args and answer, mean 1.82 steps, 0 drift. No floor touched.
+
+### Derived TTFT, and the gap that remains
+
+Derived, NOT measured — re-evaluated characters ÷ 3.85 chars/token ÷ 70 tok/s,
+plus plan decode at ~16 tok/s:
+
+| turn shape | before | after | AVD target |
+|---|---|---|---|
+| conversational, fast path | ~1.1s | ~1.1s | < 3.0s ✓ |
+| conversational, still plans | ~4.7s | ~4.1s | < 3.0s ✗ |
+| 1 tool | ~8.5s | ~5.8s | < 6.0s ✓ (just) |
+| 2 tools | ~11.8s | ~7.2s | — |
+| 3 tools | ~15.3s | ~8.6s | < 9.0s ✓ (just) |
+
+Two honest caveats:
+
+1. **The tool-turn targets are met on paper with no margin.** 5.8s against 6.0s
+   and 8.6s against 9.0s sit inside the error bars of a chars-per-token estimate
+   and a single-point tok/s figure. "Plausibly met, needs the device", not
+   "cleared".
+2. **The remaining miss is any conversational turn the fast path declines** —
+   ~4.1s against a 3.0s target. That is the knowledge-question class ("what is
+   the capital of France", "how long to boil eggs"): 8 of the corpus's 18
+   no-tool turns, which still pay a full planning generation. A1 cannot close
+   it. **Widening the fast path is the remaining work**, and it is gated on a
+   real-model harness because the corpus cannot see the difference.
