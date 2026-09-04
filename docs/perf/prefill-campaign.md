@@ -8,6 +8,43 @@ Everything here is measured. Where a number is estimated it says so.
 
 ---
 
+## Start here
+
+**What shipped** (measured on the test AVD unless stated): prewarm of the system
+prefix, a conversational fast path, `n_predict: 0`, the prefix KV cache
+persisted to disk, and the append-only prompt layout. Cold turn 41.2s → 13.8s,
+warm turn 12.1s → 5.0s, and the mid-turn planning step down a further 60%.
+
+**Two decisions are open and both belong to a person, not to this document:**
+
+1. **`n_ctx` 4096 → 8192.** With an honest, derived context reserve, *every*
+   tools-capable model in the catalog gets ~896 tokens of conversation history
+   against the 1024 minimum the codebase itself asserts. Prefix trimming is
+   exhausted and proven so. Either the window goes up (~+250 MB predicted, one
+   line in `catalog.ts`, a ratchet test names the line to delete) or tool
+   capability stops shipping on 4096-context models. See *The context-window
+   ceiling*.
+2. **A run on the real phone.** Every number here is from a 4-core emulator that
+   is roughly 3x slower than the target hardware and is sharing a core with an
+   unrelated process. `docs/perf/phone-protocol.md` makes it about five minutes.
+   The first row of its table decides whether anything else transfers: if the
+   phone's `files/gpu-probe.txt` reads `ok` where the AVD reads `failed`, the
+   phone is on a different backend and these numbers describe a different
+   machine.
+
+**What is proven and what is not.** Token counts, character counts, prompt
+structure and the eval corpus results are proven. Every claim about how a *real
+model behaves* after a prompt change is NOT — the corpus replays scripted
+responses and cannot see the difference. See *The harness blind spot*.
+
+**If you are about to optimize something here, read *Settled questions* and
+*Dead ends* first.** Several attractive-looking ideas are already measured and
+dead, and re-running them costs hours.
+
+---
+
+---
+
 ## The governing measurement
 
 Test AVD (`whisper-test`: arm64-v8a, 4 cores, 6 GB, android-35, on an Apple M4
