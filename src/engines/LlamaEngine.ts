@@ -58,6 +58,55 @@ let multimodalReady = false;
 // llama.cpp and matches what whisper uses here.
 const ANDROID_THREADS = 4;
 
+/**
+ * KV snapshot of the AGENT PREFIX, so a cold start does not recompute it.
+ *
+ * Deliberately a DIFFERENT file from SESSION_PATH below, and written from a
+ * different call site. saveSession persists whatever the last completion's
+ * prompt was, so sharing one path would have doSuspend() overwrite the prefix
+ * with a conversation snapshot and doResume() clobber it back — a feature that
+ * works until the first time the app is backgrounded and then silently stops
+ * winning, which is the worst possible shape for a performance fix.
+ *
+ * The sidecar holds the context signature and a hash of the rendered prefix.
+ * Neither is needed for CORRECTNESS: the cache hit is computed by comparing
+ * actual token vectors (find_common_prefix_length in rn-completion.cpp), so a
+ * stale snapshot degrades to a shorter common prefix, never to a wrong answer.
+ * The guard exists only to avoid reading ~100 MB off disk to earn a hit worth
+ * about fifteen tokens — the system prompt carries today's DATE on its second
+ * line, so yesterday's snapshot diverges almost immediately.
+ */
+const PREFIX_PATH = (
+  (FileSystem.cacheDirectory ?? FileSystem.documentDirectory) + 'llama-prefix.bin'
+).replace('file://', '');
+const PREFIX_META_PATH =
+  (FileSystem.cacheDirectory ?? FileSystem.documentDirectory) + 'llama-prefix.json';
+
+/** Identity of the loaded context: a snapshot is only loadable into the same
+ *  model and the same KV geometry. Set by doLoad, cleared by doUnload. */
+let contextSig: string | null = null;
+
+/** True from load until the first real generation. loadSession REPLACES the KV
+ *  cache, so restoring a prefix over a live conversation would silently swap
+ *  the model's context out from under the user. Only ever restore into a
+ *  context that has not generated anything yet. */
+let contextFresh = false;
+
+/** Non-cryptographic hash (FNV-1a). This guards a cache, not a secret. */
+function hashText(text: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36);
+}
+
+/** The stamp of the snapshot currently on disk, or null if there isn't one. */
+async function readPrefixStamp(): Promise<string | null> {
+  return FileSystem.readAsStringAsync(PREFIX_META_PATH).catch(() => null);
+}
+
 // KV session snapshot used across suspend/resume. Lives in the cache dir — it
 // is a pure speed optimization (skips re-prefilling the conversation), so the
 // OS reclaiming it costs nothing but latency.
@@ -268,6 +317,9 @@ async function doLoad(
   context = ctx;
   loadedSpec = spec;
   loadedFiles = files;
+  // Everything a saved KV snapshot must agree with to be loadable at all.
+  contextSig = [spec.id, spec.nCtx, Platform.OS, gpuLayers > 0 ? 'gpu' : 'cpu'].join('|');
+  contextFresh = true;
 }
 
 async function doUnload(): Promise<void> {
@@ -279,6 +331,8 @@ async function doUnload(): Promise<void> {
   suspendedFiles = null;
   sessionSaved = false;
   multimodalReady = false;
+  contextSig = null;
+  contextFresh = false;
 }
 
 async function doSuspend(): Promise<void> {
@@ -319,6 +373,10 @@ async function doResume(): Promise<void> {
   // far cheaper than the cold load.
   await doLoad(spec, files);
   if (restoreSession && context) {
+    // doLoad() marked the context fresh; it isn't — it is about to hold (or
+    // re-prefill) a CONVERSATION. Clearing this is what stops a later prewarm
+    // from restoring the agent prefix over the user's resumed chat.
+    contextFresh = false;
     try {
       await (context as LlamaContext).loadSession(SESSION_PATH);
     } catch {
@@ -419,6 +477,7 @@ export const LlamaEngine: Engine = {
     if (prewarming) void context?.stopCompletion();
     return enqueue(async () => {
       await doResume(); // transparent wake-up if the app was backgrounded
+      contextFresh = false; // a prefix snapshot must never land on a live chat
       return doGenerate(messages, onToken, opts);
     });
   },
@@ -428,7 +487,23 @@ export const LlamaEngine: Engine = {
     return enqueue(async () => {
       if (!context) return; // nothing loaded (or unloaded while we queued)
       prewarming = true;
+      const prefixText = messages.map((m) => `${m.role}:${m.content}`).join('\n');
+      const stamp = contextSig ? `${contextSig}|${hashText(prefixText)}` : null;
       try {
+        // Fast path: this exact prefix, under this exact context, was warmed on
+        // a previous run and its KV cache is on disk. Restoring it is a
+        // sequential read in place of ~1800 tokens of GEMM (28s on the test
+        // AVD). Only ever into a context that has not generated yet —
+        // loadSession REPLACES the KV cache.
+        if (stamp && contextFresh && (await readPrefixStamp()) === stamp) {
+          try {
+            await (context as LlamaContext).loadSession(PREFIX_PATH);
+            return; // cache restored; the ladder below would be wasted work
+          } catch {
+            // Stale, truncated, or reclaimed by the OS — fall through and warm
+            // it the slow way, which also rewrites the snapshot.
+          }
+        }
         // Warm in slices of the final message, each completion extending the
         // cached prefix the previous one left behind. One shot would be fewer
         // calls, but it would also be UNINTERRUPTIBLE: prompt evaluation runs
@@ -470,6 +545,19 @@ export const LlamaEngine: Engine = {
             ...(loadedSpec?.stop ? { stop: loadedSpec.stop } : {}),
           });
           if (end >= full.length) break;
+        }
+        // Ladder finished (not abandoned): persist the prefix KV so the next
+        // cold start reads it instead of recomputing it. Written here, right
+        // after the warm and before any real turn, because saveSession
+        // persists whatever the LAST completion's prompt was — after a real
+        // turn this file would contain prefix+conversation and match less.
+        if (stamp && !prewarmAbort) {
+          try {
+            await (context as LlamaContext).saveSession(PREFIX_PATH, { tokenSize: -1 });
+            await FileSystem.writeAsStringAsync(PREFIX_META_PATH, stamp);
+          } catch {
+            // Out of disk, or the cache dir was reclaimed. Costs latency only.
+          }
         }
       } catch {
         // Best-effort: a warm cache is an optimization, never a requirement.
