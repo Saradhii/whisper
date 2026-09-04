@@ -151,3 +151,80 @@ describe('applyLayout', () => {
     expect(out[2]!.content).toBe('Now reply to me directly…');
   });
 });
+
+const bracket = (s: string) => s.slice(0, s.indexOf(']') + 1);
+const stripToday = (s: string) => s.replace(/Today's date is [0-9-]+\./, '');
+
+describe('toTableInNote (configuration C)', () => {
+  it('takes the date table out of the system prefix', () => {
+    const out = applyLayout(currentPlanPrompt(), 'table-in-note');
+    expect(out[0]!.content).not.toContain('Dates (copy from this list');
+    expect(out[0]!.content).not.toContain('tomorrow 2026-08-13');
+    // Everything else in the prefix survives — this is a MOVE, not a cut.
+    expect(out[0]!.content).toContain('Tools:');
+    expect(out[0]!.content).toContain('Worked examples:');
+  });
+
+  it('leaves the system prefix free of the date table, so a KV snapshot outlives midnight', () => {
+    // The property this configuration exists for: render the prefix on two
+    // different days and, once the one remaining `Today's date is …` line is
+    // discounted, get byte-identical text.
+    const a = applyLayout(currentPlanPrompt(), 'table-in-note')[0]!.content;
+    const dayLater = new Date('2026-08-13T09:15');
+    const b = applyLayout(
+      [
+        ...agentPrefix(tools(), dayLater),
+        { role: 'user', content: REQUEST },
+        turnReference(dayLater, REQUEST),
+        planInstruction([]),
+      ],
+      'table-in-note',
+    )[0]!.content;
+    expect(stripToday(a)).toBe(stripToday(b));
+  });
+
+  it('puts the table in the reference block, exactly where legacy puts it', () => {
+    const c = applyLayout(currentPlanPrompt(), 'table-in-note');
+    const ref = c.find((m) => m.content.startsWith('[Reference'))!.content;
+    const legacy = legacyPlanNote(NOW, [], REQUEST).content;
+    // The bracket — clock, dates, relative times — must match legacy's byte for
+    // byte, so any difference in the A/B is attributable to STRUCTURE and not to
+    // the dates being presented differently.
+    expect(bracket(ref)).toBe(bracket(legacy));
+  });
+
+  it('keeps A1 structure: reference before the results, short instruction last', () => {
+    const history: AgentMessage[] = [
+      { role: 'assistant', content: '{"tool": "list_calendar_events", "arguments": {}}' },
+      { role: 'user', content: 'Result of list_calendar_events: No events in that range.' },
+    ];
+    const before = currentPlanPrompt(['list_calendar_events'], history);
+    const out = applyLayout(before, 'table-in-note');
+    const refAt = out.findIndex((m) => m.content.startsWith('[Reference'));
+    const resultAt = out.findIndex((m) => m.content.startsWith('Result of'));
+    expect(refAt).toBeLessThan(resultAt);
+    // …and the trailing instruction is still its own short message, which is the
+    // half of A1 that produces the saving. Legacy would have merged it away.
+    expect(out[out.length - 1]!.content).toContain('Reply with exactly one JSON object:');
+    expect(out.length).toBe(before.length);
+  });
+
+  it('handles a turn whose request names no time', () => {
+    // `turnReference` renders the relative times only when the request names a
+    // time, so the common case has none — the table must still land INSIDE the
+    // bracket rather than after it.
+    const asked = 'Show me my photos from the beach';
+    const plain: AgentMessage[] = [
+      ...agentPrefix(tools(), NOW),
+      { role: 'user', content: asked },
+      turnReference(NOW, asked),
+      planInstruction([]),
+    ];
+    expect(turnReference(NOW, asked).content).not.toContain('Use ONLY if I say');
+    const ref = applyLayout(plain, 'table-in-note').find((m) =>
+      m.content.startsWith('[Reference'),
+    )!.content;
+    expect(ref).toContain('Dates: today 2026-08-12');
+    expect(ref.indexOf('Dates:')).toBeLessThan(ref.indexOf(']'));
+  });
+});

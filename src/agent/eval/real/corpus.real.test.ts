@@ -23,6 +23,8 @@
 //   npm run eval:real                            score and gate
 //   WHISPER_EVAL_ABLATION=dates npm run eval:real   prove the gate can fail
 //   WHISPER_EVAL_LAYOUT=legacy npm run eval:real  score the PRE-A1 prompt layout
+//   WHISPER_EVAL_LAYOUT=table-in-note …            config C: A1 structure, table in the note
+//   WHISPER_EVAL_DUMP=/tmp/run.json …              per-turn rows, for an exact diff
 //   WHISPER_EVAL_REPEATS=3 npm run eval:real     measure run-to-run variance
 //   WHISPER_EVAL_ONLY=dates npm run eval:real    one tag, for a fast loop
 //   WHISPER_EVAL_UPDATE_BASELINE=1 npm run eval:real   re-record the ratchet
@@ -59,6 +61,17 @@ const REPEATS = Math.max(1, Number(process.env.WHISPER_EVAL_REPEATS ?? 1));
 const SEED = Number(process.env.WHISPER_EVAL_SEED ?? 1);
 const ONLY = process.env.WHISPER_EVAL_ONLY ?? '';
 const UPDATE = process.env.WHISPER_EVAL_UPDATE_BASELINE === '1';
+/**
+ * Write one JSON row per turn to this path.
+ *
+ * Exists because a per-SCENARIO diff between two prompt arrangements is the
+ * strongest evidence this harness produces — stronger than any aggregate, which
+ * can move by five while only one scenario is understood. Grepping the printed
+ * failure list gives pass/fail but loses WHY, and silently conflates "called the
+ * wrong tool" with "answer text did not match". The dump keeps the scored
+ * components so two runs can be diffed exactly.
+ */
+const DUMP = process.env.WHISPER_EVAL_DUMP ?? '';
 
 /**
  * Every scenario, including the live-only ones.
@@ -113,6 +126,20 @@ describe.skipIf(!check.ok)('agent eval corpus — real model', () => {
       const summary = summarize(report, scenarios);
       runs.push(summary);
       last = report;
+      if (DUMP) {
+        const rows = report.perTurn.map((t) => ({
+          id: `${t.scenarioId}#${t.turnIndex}`,
+          tool: t.toolCorrect,
+          args: t.argsCorrect,
+          call: t.toolCorrect && t.argsCorrect,
+          done: t.completed,
+          answer: t.answerCorrect,
+          why: t.failures,
+        }));
+        const path_ = REPEATS > 1 ? `${DUMP}.seed${seed}` : DUMP;
+        fs.writeFileSync(path_, `${JSON.stringify(rows, null, 1)}\n`);
+        console.log(`  per-turn dump written to ${path_}`);
+      }
       console.log(
         formatTable(summary, {
           model: path.basename(MODEL_PATH),

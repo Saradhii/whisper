@@ -299,18 +299,32 @@ export async function loadRealModel(): Promise<RealModel> {
             `and must NOT be read as an accuracy regression.`,
         );
       }
+      // Resolved BEFORE the try, and wrapped in its own timeout.
+      //
+      // This used to sit inline in the options object, where `await` ran during
+      // ARGUMENT construction — i.e. before `withTimeout` had wrapped anything.
+      // That left compiling a GBNF grammar as the one un-timed native call in
+      // the hot path, and it is a prime suspect for the wedge: a run that hung
+      // with the model loaded but no score table printed, while the
+      // consecutive-timeout abort never fired, is exactly what an un-timed hang
+      // here looks like. Grammars are cached, so this costs nothing after the
+      // first two generations.
+      const grammar = opts.grammar
+        ? await withTimeout(grammarFor(opts.grammar), 'GBNF grammar compilation')
+        : undefined;
+
       let text: string;
       try {
         text = await withTimeout(
           completion.generateCompletion(prompt, {
-            ...(opts.grammar ? { grammar: await grammarFor(opts.grammar) } : {}),
+            ...(grammar ? { grammar } : {}),
             maxTokens: opts.maxTokens ?? 1024,
             temperature: opts.temperature ?? 0.7,
             ...(opts.seed === undefined ? {} : { seed: opts.seed }),
             customStopTriggers: STOP,
             ...(opts.onToken ? { onTextChunk: opts.onToken } : {}),
           }),
-          prompt,
+          `generation (${phaseLabel(opts)})`,
         );
       } catch (e) {
         // Only a TIMEOUT counts toward the wedge tally. A grammar error or an
@@ -337,16 +351,20 @@ export async function loadRealModel(): Promise<RealModel> {
  * ~200 generations, and a timer leaked per generation would keep the process
  * alive for two minutes after the table had already printed.
  */
-function withTimeout(work: Promise<string>, prompt: string): Promise<string> {
+/** Which half of a turn a stalled call belonged to, for the timeout message. */
+const phaseLabel = (opts: { grammar?: string }) =>
+  opts.grammar ? 'grammar-constrained planning' : 'unconstrained answer';
+
+function withTimeout<T>(work: Promise<T>, what: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   const bomb = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       reject(
         new Error(
-          `generation exceeded ${GENERATION_TIMEOUT_MS} ms and was abandoned. This is the ` +
-            `known node-llama-cpp wedge, not a slow prompt — the scenario is scored as a ` +
-            `failure so the rest of the run survives. Re-run it; if it recurs at the same ` +
-            `scenario, suspect the prompt. Prompt tail: ${JSON.stringify(prompt.slice(-160))}`,
+          `generation exceeded ${GENERATION_TIMEOUT_MS} ms and was abandoned — stalled in: ` +
+            `${what}. This is the known node-llama-cpp wedge, not a slow prompt: the ` +
+            `scenario is scored as a failure so the rest of the run survives, and three ` +
+            `in a row abandon the run rather than writing a meaningless score.`,
         ),
       );
     }, GENERATION_TIMEOUT_MS);
