@@ -103,14 +103,20 @@ def main():
     say("launching")
     sh("shell", "am", "force-stop", PKG)
     time.sleep(1)
-    # `am start -n` rather than `monkey`: monkey silently started nothing on the
-    # test AVD (it printed its usual banner, left focus on the home screen, and
-    # the app had no pid), which read as a launch crash and nearly got a
-    # perfectly good release build reported as broken. `am start` names the
-    # component explicitly and reports what it did. Note this is the inverse of
-    # the DEV build, where `am start -n .MainActivity` opens the dev-launcher
-    # menu — but a release build has no dev launcher, so it is correct here.
-    launched = sh("shell", "am", "start", "-n", f"{PKG}/.MainActivity")
+    # Launch by DEEP LINK to the root route, for two independent reasons.
+    #
+    # `monkey` silently started nothing on the test AVD — it printed its usual
+    # banner, left focus on the home screen, and the app had no pid, which read
+    # as a launch crash and nearly got a perfectly good release build reported
+    # as broken.
+    #
+    # And `am start -n .MainActivity` is not deterministic either: the app
+    # restores its previous route, so a run that follows one ending on the trace
+    # screen never sees the composer and fails checks about the app on a detail
+    # of the previous run. `whisper://` lands on the chat root every time, which
+    # is what makes this script idempotent.
+    launched = sh("shell", "am", "start", "-a", "android.intent.action.VIEW",
+                  "-d", "whisper://", PKG)
     if "Error" in launched or "does not exist" in launched:
         say(f"  am start said: {launched.strip().splitlines()[-1] if launched.strip() else '(nothing)'}")
 
