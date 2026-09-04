@@ -22,8 +22,8 @@
 //
 //   npm run eval:real                            score and gate
 //   WHISPER_EVAL_ABLATION=dates npm run eval:real   prove the gate can fail
-//   WHISPER_EVAL_LAYOUT=legacy npm run eval:real  score the PRE-A1 prompt layout
-//   WHISPER_EVAL_LAYOUT=table-in-note …            config C: A1 structure, table in the note
+//   WHISPER_EVAL_LAYOUT=a1 npm run eval:real     counterfactual: table in the system prefix
+//   WHISPER_EVAL_LAYOUT=legacy npm run eval:real counterfactual: the pre-A1 single note
 //   WHISPER_EVAL_DUMP=/tmp/run.json …              per-turn rows, for an exact diff
 //   WHISPER_EVAL_REPEATS=3 npm run eval:real     measure run-to-run variance
 //   WHISPER_EVAL_ONLY=dates npm run eval:real    one tag, for a fast loop
@@ -158,8 +158,9 @@ describe.skipIf(!check.ok)('agent eval corpus — real model', () => {
     const summary = runs[0]!;
 
     // --- the ratchet -------------------------------------------------------
-    const baseline = readBaseline();
-
+    // Recording comes FIRST and never reads the old file. Re-recording is the
+    // documented fix for a stale baseline, so validating the stale one on the
+    // way in would make the repair command the one command that cannot run.
     if (UPDATE) {
       if (ONLY) throw new Error('refusing to record a baseline from a filtered run (WHISPER_EVAL_ONLY is set)');
       if (ABLATION !== 'none' || LAYOUT !== 'current')
@@ -168,6 +169,11 @@ describe.skipIf(!check.ok)('agent eval corpus — real model', () => {
       console.log(`  baseline written to ${BASELINE_PATH}\n`);
       return;
     }
+
+    // A filtered run scores a subset, so its turn count is not the corpus's and
+    // the count check must not apply; it never gates anyway, it only prints a
+    // delta against the per-tag rows, which ARE comparable.
+    const baseline = readBaseline(ONLY ? null : summary.overall.turns);
 
     if (!baseline) {
       console.log(
@@ -213,7 +219,7 @@ if (!check.ok) {
 
 // ---------------------------------------------------------------------------
 
-function readBaseline(): Baseline | null {
+function readBaseline(turns: number | null): Baseline | null {
   if (!fs.existsSync(BASELINE_PATH)) return null;
   const parsed = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8')) as Baseline;
   const model = path.basename(MODEL_PATH);
@@ -222,6 +228,18 @@ function readBaseline(): Baseline | null {
       `baseline.json was recorded against ${parsed.model} but this run used ${model}. ` +
         `Scores are not comparable across models — record a new baseline, or point ` +
         `WHISPER_EVAL_MODEL at the original.`,
+    );
+  }
+  // The floors are absolute turn COUNTS, so a corpus that has grown or shrunk
+  // makes them meaningless in a way that is easy to miss: adding scenarios makes
+  // an old baseline trivially easy to beat, and removing them makes it
+  // impossible. This fired for real — a baseline recorded over 82 turns was
+  // still on disk after the corpus moved to 79.
+  if (turns !== null && parsed.overall.turns !== turns) {
+    throw new Error(
+      `baseline.json was recorded over ${parsed.overall.turns} turns but this corpus has ` +
+        `${turns}. The floors are absolute counts, so they cannot be compared across a ` +
+        `corpus change — re-record with WHISPER_EVAL_UPDATE_BASELINE=1.`,
     );
   }
   return parsed;

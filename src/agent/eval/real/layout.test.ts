@@ -1,109 +1,188 @@
 // Pins the prompt surgery in ./layout.ts against the real rendered prompt.
 //
-// This runs in `npm run check` — it needs no model, because everything under
-// test is pure string work over messages built by `prompt.ts`. That matters a
-// lot: the two experiments this harness exists to run are only worth anything
-// if the transforms actually transform. A landmark that goes stale when someone
-// rewords the prompt would turn "the date table is load bearing" into "removing
-// it changed nothing", silently and in the reassuring direction.
+// Runs in `npm run check` — no model needed, because everything under test is
+// pure string work over messages built by `prompt.ts`.
 //
-// The legacy-layout assertion is the important one: it checks the RECONSTRUCTED
-// note against `legacyPlanNote()` itself, so the A/B really is comparing the
-// two arrangements the app has actually had, not an approximation of one.
+// THE DIRECTION IS THE THING BEING TESTED. Every transform starts from the
+// SHIPPED prompt (configuration C: date table in the reference block, no date
+// anywhere in the system prefix) and produces a counterfactual. When A1 was
+// shipped these ran the other way. A transform pointed at the wrong baseline
+// does not fail — it silently measures a layout nobody is running and reports
+// it as the product — so the assertions below are deliberately about direction:
+//
+//   * `current` is the LITERAL identity (same array reference), so the baseline
+//     arm cannot drift into being a transform that happens to cancel out;
+//   * the legacy note is compared against `legacyPlanNote()` itself;
+//   * the A1 prefix is compared against the shape the pre-C `systemPrompt()`
+//     actually emitted, reproduced here as a fixture.
+//
+// If the baseline moves again, these go red immediately.
 import { describe, expect, it } from 'vitest';
 
-import { agentPrefix, legacyPlanNote, planInstruction, turnReference } from '@/src/agent/prompt';
+import {
+  agentPrefix,
+  legacyPlanNote,
+  mentionsTime,
+  planInstruction,
+  turnReference,
+} from '@/src/agent/prompt';
 import type { AgentMessage } from '@/src/engines/types';
 
 import { buildFakeTools } from '../tools';
 import { emptyWorld } from '../types';
-import { ablate, applyLayout, toLegacyLayout } from './layout';
+import { ablate, applyLayout, toA1Layout, toLegacyLayout } from './layout';
 
 const NOW = new Date('2026-08-12T09:15');
+/** Mentions time ("week"), so the relative-times block renders and the legacy
+ *  reconstruction is byte-comparable with `legacyPlanNote()`. */
 const REQUEST = 'What is on my calendar this week?';
+/** No time word at all, so the relative-times block is absent. */
+const NO_TIME = 'Show me my photos from the beach';
 const tools = () => buildFakeTools(emptyWorld(), NOW);
 
-/** A planning prompt in the shipped layout, built the way `runAgent()` builds it. */
-function currentPlanPrompt(called: string[] = [], history: AgentMessage[] = []): AgentMessage[] {
+/** A planning prompt in the SHIPPED layout, built the way `runAgent()` builds it. */
+function planPrompt(
+  called: string[] = [],
+  history: AgentMessage[] = [],
+  request = REQUEST,
+): AgentMessage[] {
   return [
     ...agentPrefix(tools()),
-    { role: 'user', content: REQUEST },
-    turnReference(NOW, REQUEST),
+    { role: 'user', content: request },
+    turnReference(NOW, request),
     ...history,
     planInstruction(called),
   ];
 }
 
-describe('ablate', () => {
-  it('finds the date table where systemPrompt puts it', () => {
-    const system = agentPrefix(tools())[0]!.content;
-    expect(system).toContain('Dates (copy from this list, never work one out):');
-    expect(system).toContain('today 2026-08-12');
-    expect(system).toContain('This week means 2026-08-12 to 2026-08-18');
+const systemOf = (m: AgentMessage[]) => m.find((x) => x.content.includes('Tools:'))!.content;
+const refOf = (m: AgentMessage[]) => m.find((x) => x.content.startsWith('[Reference'))!.content;
+const bracketOf = (s: string) => s.slice(0, s.indexOf(']') + 1);
+
+// ---------------------------------------------------------------------------
+
+describe('the shipped baseline this module transforms FROM', () => {
+  it('keeps the date table in the reference block, not the system prefix', () => {
+    // If this flips, every transform below is pointed at the wrong baseline.
+    expect(refOf(planPrompt())).toContain('Dates (copy from this list, never work one out): ');
+    expect(refOf(planPrompt())).toContain('today 2026-08-12');
+    expect(systemOf(planPrompt())).not.toContain('Dates (copy from this list');
+    expect(systemOf(planPrompt())).not.toContain('today 2026-08-12');
   });
 
-  it('"dates" removes the table from the system prefix and nothing else', () => {
-    const system = agentPrefix(tools())[0]!.content;
-    const cut = ablate(system, 'dates')!;
-    expect(cut).not.toContain('tomorrow 2026-08-13');
-    expect(cut).not.toContain('This week means');
-    // Today's date survives: it is its own line in systemPrompt, and the
-    // experiment is "remove the lookup table", not "hide what day it is".
-    expect(cut).toContain("Today's date is 2026-08-12.");
-    // The rest of the prefix is untouched.
-    expect(cut).toContain('Tools:');
-    expect(cut).toContain('Worked examples:');
-    expect(cut.length).toBeLessThan(system.length);
+  it('has a date-independent system prefix', () => {
+    // The property configuration C exists for: the prefix is byte-identical on
+    // any day, so a prewarmed KV snapshot survives midnight. `systemPrompt()`
+    // takes no Date, so this is structural — but assert it anyway, because a
+    // future edit could reintroduce a clock and nothing else would notice.
+    expect(systemOf(planPrompt())).toBe(
+      systemOf([
+        ...agentPrefix(tools()),
+        turnReference(new Date('2027-01-01T09:15'), REQUEST),
+        planInstruction([]),
+      ]),
+    );
   });
 
-  it('"dates" leaves the reference block alone', () => {
-    expect(ablate(turnReference(NOW, REQUEST).content, 'dates')).toBeNull();
-  });
-
-  it('"anchors" also strips the relative times from the reference block', () => {
-    const ref = turnReference(NOW, REQUEST).content;
-    expect(ref).toContain('in an hour 10:15');
-    const cut = ablate(ref, 'anchors')!;
-    expect(cut).not.toContain('in an hour');
-    expect(cut).not.toContain('Use ONLY if I say');
-    // Clock, weekday and the echoed request all survive.
-    expect(cut).toContain('09:15');
-    expect(cut).toContain('Wednesday');
-    expect(cut).toContain(REQUEST);
-    // The bracket still closes — a cut that ate the `]` would change far more
-    // than the anchors.
-    expect(cut).toContain('2026-08-12. ]');
-  });
-
-  it('"none" is a no-op everywhere', () => {
-    expect(ablate(agentPrefix(tools())[0]!.content, 'none')).toBeNull();
-    expect(ablate(turnReference(NOW, REQUEST).content, 'none')).toBeNull();
-  });
-
-  it('throws rather than cutting nothing when a landmark moves', () => {
-    expect(() => ablate('Dates (copy from this list, never work one out):\nno blank line', 'dates'))
-      .toThrow(/prompt.ts has been reworded/);
+  it('renders the relative-time block only when the request names a time', () => {
+    expect(mentionsTime(REQUEST)).toBe(true);
+    expect(mentionsTime(NO_TIME)).toBe(false);
+    expect(turnReference(NOW, REQUEST).content).toContain('Use ONLY if I say');
+    expect(turnReference(NOW, NO_TIME).content).not.toContain('Use ONLY if I say');
   });
 });
 
-describe('toLegacyLayout', () => {
+describe('applyLayout("current") — the identity', () => {
+  it('returns the very same array, not a copy', () => {
+    // Reference equality on purpose. A baseline arm that rebuilt the prompt
+    // could differ from the product by a stray space, and a space is a silent
+    // KV-cache miss rather than an error.
+    const msgs = planPrompt();
+    expect(applyLayout(msgs, 'current')).toBe(msgs);
+  });
+
+  it('is the identity for an answer-phase prompt too', () => {
+    const answer: AgentMessage[] = [
+      ...agentPrefix(tools()),
+      { role: 'user', content: REQUEST },
+      { role: 'user', content: 'Now reply to me directly…' },
+    ];
+    expect(applyLayout(answer, 'current')).toBe(answer);
+    // …and so are the counterfactuals: under C the answer prompt carries no
+    // date table in any arm, so there is nothing to move.
+    expect(applyLayout(answer, 'a1')).toBe(answer);
+    expect(applyLayout(answer, 'legacy')).toBe(answer);
+  });
+});
+
+describe('toA1Layout — moves the table INTO the system prefix', () => {
+  it('takes the table out of the reference block', () => {
+    const ref = refOf(toA1Layout(planPrompt()));
+    expect(ref).not.toContain('Dates (copy from this list');
+    expect(ref).not.toContain('today 2026-08-12');
+    // The clock, the weekday, the relative times and the request all survive.
+    expect(ref).toContain('09:15');
+    expect(ref).toContain('Wednesday');
+    expect(ref).toContain('Use ONLY if I say');
+    expect(ref).toContain(REQUEST);
+  });
+
+  it('leaves no double space where the seam was removed', () => {
+    // The seam carries its own leading space; consuming it with the seam is
+    // what keeps the bracket well formed. A doubled space here would be a
+    // silent cache miss on every turn, which is the failure mode
+    // mentionsTime.test.ts guards for the other seam.
+    expect(refOf(toA1Layout(planPrompt()))).not.toContain('  ');
+    expect(refOf(toA1Layout(planPrompt(undefined, undefined, NO_TIME)))).not.toContain('  ');
+  });
+
+  it('reproduces the pre-C system prefix, table and date line and rule together', () => {
+    const system = systemOf(toA1Layout(planPrompt()));
+    expect(system).toContain(
+      "You are Whisper, a helpful assistant running fully on the user's phone.\n" +
+        "Today's date is 2026-08-12.\n" +
+        '\n' +
+        'Dates (copy from this list, never work one out):\n' +
+        'today 2026-08-12',
+    );
+    expect(system).toContain('This week means 2026-08-12 to 2026-08-18.\n\nYou do real things');
+    // The pointer moved with the table — under A1 the rule said "near the top
+    // of this message"; moving only one of the two would be a configuration
+    // nobody ever ran.
+    expect(system).toContain('copy it from the date list near the top');
+    expect(system).not.toContain('copy it from the date list in the note');
+  });
+
+  it('keeps every message and its order', () => {
+    const before = planPrompt(['list_calendar_events']);
+    const after = toA1Layout(before);
+    expect(after.length).toBe(before.length);
+    expect(after.map((m) => m.role)).toEqual(before.map((m) => m.role));
+    // A1 was append-only too: the reference block stays ahead of the results
+    // and the short instruction stays last.
+    expect(after[after.length - 1]!.content).toContain('Reply with exactly one JSON object:');
+  });
+
+  it('throws rather than silently doing nothing when a landmark moves', () => {
+    const broken = planPrompt().map((m) =>
+      m.content.startsWith('[Reference')
+        ? { ...m, content: '[Reference, not a request — it is 09:15 am on Wednesday, 2026-08-12.]' }
+        : m,
+    );
+    expect(() => toA1Layout(broken)).toThrow(/prompt\.ts has been reworded/);
+  });
+});
+
+describe('toLegacyLayout — rebuilds the pre-A1 single note', () => {
   it('reproduces legacyPlanNote() exactly, on a first planning step', () => {
-    const out = toLegacyLayout(currentPlanPrompt());
+    const out = toLegacyLayout(planPrompt());
     expect(out[out.length - 1]).toEqual(legacyPlanNote(NOW, [], REQUEST));
   });
 
   it('reproduces legacyPlanNote() exactly with spent calls', () => {
     const called = ['list_calendar_events'];
-    const out = toLegacyLayout(currentPlanPrompt(called));
+    const out = toLegacyLayout(planPrompt(called));
     expect(out[out.length - 1]).toEqual(legacyPlanNote(NOW, called, REQUEST));
-  });
-
-  it('takes the date table OUT of the system prefix', () => {
-    const out = toLegacyLayout(currentPlanPrompt());
-    expect(out[0]!.content).not.toContain('Dates (copy from this list');
-    expect(out[0]!.content).not.toContain('tomorrow 2026-08-13');
-    // …and it is in the note instead, which is the whole point of the A/B.
-    expect(out[out.length - 1]!.content).toContain('Dates: today 2026-08-12');
   });
 
   it('moves the note AFTER the decisions and results', () => {
@@ -111,120 +190,94 @@ describe('toLegacyLayout', () => {
       { role: 'assistant', content: '{"tool": "list_calendar_events", "arguments": {}}' },
       { role: 'user', content: 'Result of list_calendar_events: No events in that range.' },
     ];
-    const out = toLegacyLayout(currentPlanPrompt(['list_calendar_events'], history));
-    const last = out[out.length - 1]!.content;
-    expect(last).toContain('[Reference, not a request');
-    // The result must now come BEFORE the note — that re-render-after-everything
-    // placement is exactly the cache behaviour A1 removed.
+    const out = toLegacyLayout(planPrompt(['list_calendar_events'], history));
+    expect(out[out.length - 1]!.content).toContain('[Reference, not a request');
     const resultAt = out.findIndex((m) => m.content.startsWith('Result of'));
+    // Re-rendering the note after everything is exactly the cache behaviour A1
+    // removed, so the note must sit last and the result before it.
     expect(resultAt).toBeGreaterThan(0);
-    expect(resultAt).toBeLessThan(out.length - 1);
+    expect(resultAt).toBe(out.length - 2);
   });
 
-  it('preserves every message, losing nothing', () => {
-    const before = currentPlanPrompt();
+  it('restores "Today\'s date is …", which pre-A1 had and C removed', () => {
+    // Caught by cross-checking against a direct measurement: without this line
+    // the legacy arm scored 9/15 on `dates` instead of the 8/15 it scores when
+    // the real pre-A1 prompt is used, because the planner still had today's
+    // date from the prefix. C deleted the line to make the prefix
+    // date-independent, so every earlier-layout counterfactual must put it back.
+    const system = systemOf(toLegacyLayout(planPrompt()));
+    expect(system).toContain(
+      "You are Whisper, a helpful assistant running fully on the user's phone.\n" +
+        "Today's date is 2026-08-12.\n",
+    );
+    // …and NOTHING else in the prefix changes: pre-A1 had no date table, and its
+    // date rule already pointed at the note, exactly as C's does.
+    expect(system).not.toContain('Dates (copy from this list');
+    expect(system).toContain('copy it from the date list in the note');
+    expect(system.replace("Today's date is 2026-08-12.\n", '')).toBe(systemOf(planPrompt()));
+  });
+
+  it('merges the reference block and the instruction into one message', () => {
+    const before = planPrompt();
     const after = toLegacyLayout(before);
-    // reference + instruction merge into one note, so exactly one fewer.
     expect(after.length).toBe(before.length - 1);
     expect(after.some((m) => m.content === REQUEST)).toBe(true);
   });
-});
 
-describe('applyLayout', () => {
-  it('is a no-op for "current"', () => {
-    const msgs = currentPlanPrompt();
-    expect(applyLayout(msgs, 'current')).toBe(msgs);
-  });
-
-  it('on an answer-phase prompt, only strips the system date table', () => {
-    // The answer phase has no reference block and no planning instruction, so
-    // there is no note to rebuild — but the system prefix must still match the
-    // legacy one, or the two arms would differ by more than the layout.
-    const answer: AgentMessage[] = [
-      ...agentPrefix(tools()),
-      { role: 'user', content: REQUEST },
-      { role: 'user', content: 'Now reply to me directly…' },
-    ];
-    const out = applyLayout(answer, 'legacy');
-    expect(out.length).toBe(answer.length);
-    expect(out[0]!.content).not.toContain('Dates (copy from this list');
-    expect(out[2]!.content).toBe('Now reply to me directly…');
+  it('handles a request that names no time', () => {
+    const out = toLegacyLayout(planPrompt(undefined, undefined, NO_TIME));
+    const note = out[out.length - 1]!.content;
+    expect(note).toContain('Dates: today 2026-08-12');
+    expect(note).not.toContain('  ');
+    expect(bracketOf(note).endsWith(']')).toBe(true);
+    expect(note).toContain(NO_TIME);
   });
 });
 
-const bracket = (s: string) => s.slice(0, s.indexOf(']') + 1);
-const stripToday = (s: string) => s.replace(/Today's date is [0-9-]+\./, '');
-
-describe('toTableInNote (configuration C)', () => {
-  it('takes the date table out of the system prefix', () => {
-    const out = applyLayout(currentPlanPrompt(), 'table-in-note');
-    expect(out[0]!.content).not.toContain('Dates (copy from this list');
-    expect(out[0]!.content).not.toContain('tomorrow 2026-08-13');
-    // Everything else in the prefix survives — this is a MOVE, not a cut.
-    expect(out[0]!.content).toContain('Tools:');
-    expect(out[0]!.content).toContain('Worked examples:');
+describe('ablate — proves the gate can fail', () => {
+  it('only applies to the reference block', () => {
+    expect(ablate(systemOf(planPrompt()), 'dates')).toBeNull();
+    expect(ablate('Result of list_calendar_events: No events in that range.', 'anchors')).toBeNull();
+    expect(ablate(refOf(planPrompt()), 'none')).toBeNull();
   });
 
-  it('leaves the system prefix free of the date table, so a KV snapshot outlives midnight', () => {
-    // The property this configuration exists for: render the prefix on two
-    // different days and, once the one remaining `Today's date is …` line is
-    // discounted, get byte-identical text.
-    const a = applyLayout(currentPlanPrompt(), 'table-in-note')[0]!.content;
-    const dayLater = new Date('2026-08-13T09:15');
-    const b = applyLayout(
-      [
-        ...agentPrefix(tools()),
-        { role: 'user', content: REQUEST },
-        turnReference(dayLater, REQUEST),
-        planInstruction([]),
-      ],
-      'table-in-note',
-    )[0]!.content;
-    expect(stripToday(a)).toBe(stripToday(b));
+  it('"dates" removes the table and keeps the clock and relative times', () => {
+    const cut = ablate(refOf(planPrompt()), 'dates')!;
+    expect(cut).not.toContain('Dates (copy from this list');
+    expect(cut).not.toContain('tomorrow 2026-08-13');
+    expect(cut).not.toContain('This week means');
+    expect(cut).toContain('09:15');
+    // Today's date survives in the clock sentence: the experiment removes the
+    // LOOKUP TABLE, not the model's sense of what day it is.
+    expect(cut).toContain('2026-08-12');
+    expect(cut).toContain('Use ONLY if I say');
+    expect(cut).toContain(REQUEST);
+    expect(cut).not.toContain('  ');
   });
 
-  it('puts the table in the reference block, exactly where legacy puts it', () => {
-    const c = applyLayout(currentPlanPrompt(), 'table-in-note');
-    const ref = c.find((m) => m.content.startsWith('[Reference'))!.content;
-    const legacy = legacyPlanNote(NOW, [], REQUEST).content;
-    // The bracket — clock, dates, relative times — must match legacy's byte for
-    // byte, so any difference in the A/B is attributable to STRUCTURE and not to
-    // the dates being presented differently.
-    expect(bracket(ref)).toBe(bracket(legacy));
+  it('"anchors" removes the table and the relative times', () => {
+    const cut = ablate(refOf(planPrompt()), 'anchors')!;
+    expect(cut).not.toContain('Dates (copy from this list');
+    expect(cut).not.toContain('Use ONLY if I say');
+    expect(cut).not.toContain('in an hour');
+    expect(cut).toContain('09:15');
+    expect(cut).toContain('Wednesday');
+    expect(cut).toContain(REQUEST);
+    expect(cut).not.toContain('  ');
+    // The bracket still closes; a cut that ate the `]` would change far more
+    // than the anchors.
+    expect(cut).toContain('2026-08-12.]');
   });
 
-  it('keeps A1 structure: reference before the results, short instruction last', () => {
-    const history: AgentMessage[] = [
-      { role: 'assistant', content: '{"tool": "list_calendar_events", "arguments": {}}' },
-      { role: 'user', content: 'Result of list_calendar_events: No events in that range.' },
-    ];
-    const before = currentPlanPrompt(['list_calendar_events'], history);
-    const out = applyLayout(before, 'table-in-note');
-    const refAt = out.findIndex((m) => m.content.startsWith('[Reference'));
-    const resultAt = out.findIndex((m) => m.content.startsWith('Result of'));
-    expect(refAt).toBeLessThan(resultAt);
-    // …and the trailing instruction is still its own short message, which is the
-    // half of A1 that produces the saving. Legacy would have merged it away.
-    expect(out[out.length - 1]!.content).toContain('Reply with exactly one JSON object:');
-    expect(out.length).toBe(before.length);
+  it('"anchors" tolerates a turn that never had relative times', () => {
+    const cut = ablate(turnReference(NOW, NO_TIME).content, 'anchors')!;
+    expect(cut).not.toContain('Dates (copy from this list');
+    expect(cut).toContain('2026-08-12.]');
   });
 
-  it('handles a turn whose request names no time', () => {
-    // `turnReference` renders the relative times only when the request names a
-    // time, so the common case has none — the table must still land INSIDE the
-    // bracket rather than after it.
-    const asked = 'Show me my photos from the beach';
-    const plain: AgentMessage[] = [
-      ...agentPrefix(tools()),
-      { role: 'user', content: asked },
-      turnReference(NOW, asked),
-      planInstruction([]),
-    ];
-    expect(turnReference(NOW, asked).content).not.toContain('Use ONLY if I say');
-    const ref = applyLayout(plain, 'table-in-note').find((m) =>
-      m.content.startsWith('[Reference'),
-    )!.content;
-    expect(ref).toContain('Dates: today 2026-08-12');
-    expect(ref.indexOf('Dates:')).toBeLessThan(ref.indexOf(']'));
+  it('throws rather than cutting nothing when the seam moves', () => {
+    expect(() => ablate('[Reference, not a request — dates went missing]', 'dates')).toThrow(
+      /prompt\.ts has been reworded/,
+    );
   });
 });

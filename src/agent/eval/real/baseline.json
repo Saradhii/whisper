@@ -1,22 +1,22 @@
 {
   "model": "qwen3-1.7b-q4km.gguf",
   "ablation": "none",
-  "recordedAt": "2026-09-04T19:50:23.468Z",
+  "recordedAt": "2026-09-04T20:38:50.070Z",
   "overall": {
     "turns": 82,
-    "completed": 47,
-    "toolCorrect": 69,
-    "argsCorrect": 66,
-    "callsCorrect": 54,
-    "answerCorrect": 69
+    "completed": 49,
+    "toolCorrect": 70,
+    "argsCorrect": 68,
+    "callsCorrect": 56,
+    "answerCorrect": 70
   },
   "groups": {
     "dates": {
       "turns": 15,
-      "completed": 6,
-      "toolCorrect": 13,
-      "argsCorrect": 9,
-      "callsCorrect": 8,
+      "completed": 7,
+      "toolCorrect": 14,
+      "argsCorrect": 10,
+      "callsCorrect": 9,
       "answerCorrect": 14
     },
     "no-tool": {
@@ -26,6 +26,14 @@
       "argsCorrect": 19,
       "callsCorrect": 15,
       "answerCorrect": 18
+    },
+    "guarded": {
+      "turns": 5,
+      "completed": 5,
+      "toolCorrect": 5,
+      "argsCorrect": 5,
+      "callsCorrect": 5,
+      "answerCorrect": 5
     },
     "multistep": {
       "turns": 8,
@@ -45,10 +53,10 @@
     },
     "refusal": {
       "turns": 4,
-      "completed": 3,
+      "completed": 4,
       "toolCorrect": 4,
-      "argsCorrect": 3,
-      "callsCorrect": 3,
+      "argsCorrect": 4,
+      "callsCorrect": 4,
       "answerCorrect": 4
     }
   }
