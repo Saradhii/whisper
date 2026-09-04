@@ -89,6 +89,13 @@ on. (This is `devTrace` in `files/settings.json`.)
 Confirm a model is active: the chat header should read `Qwen3 1.7B · tools ·
 offline`. If not, download it on the Models screen first and let it finish.
 
+**The active model MUST be tools-capable, and the header word `tools` is how you
+check.** A model without `tools` (Gemma, the vision one) never reaches the agent
+loop — every turn takes the plain-chat path — so it does no prewarm, writes no
+prefix snapshot, and never runs a planning step. Run the protocol against such a
+model and runs C and D measure nothing, which reads as "the feature is broken"
+rather than "the feature does not apply here.
+
 ## 3. One-time: capture what the phone actually is
 
 Nobody has yet seen which of llama.rn's seven native variants a real Snapdragon
@@ -147,6 +154,16 @@ before it in that process** — see the warning at the bottom.
 Read the numbers: **☰ → Settings → Agent trace**. Each row shows
 `[cache N | prefill N tok N ms N t/s | decode N tok N ms N t/s]`. Newest first.
 Screenshot it, or `adb shell uiautomator dump /sdcard/t.xml && adb shell cat /sdcard/t.xml`.
+
+## 4b. When you are done
+
+**Leave the release build installed.** It is the artifact that was actually
+validated, and it is more useful sitting on the device than a dev client.
+
+To go back to Metro/hot-reload afterwards, `npm run android` reinstalls the dev
+build. This is necessary because both builds share the package name and are both
+debug-keystore-signed, so installing one silently REPLACES the other — if hot
+reload has mysteriously stopped working, this is why.
 
 ## 5. Results
 
