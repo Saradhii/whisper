@@ -4,11 +4,13 @@ import { z } from 'zod';
 import { renderExamples, WORKED_EXAMPLES } from './examples';
 import {
   answerNote,
+  legacyPlanNote,
   localDate,
-  planNote,
+  planInstruction,
   systemPrompt,
   TOOL_PROMPT_RESERVE,
   toolCatalog,
+  turnReference,
 } from './prompt';
 import { TOOL_DEFS } from './toolDefs';
 import { defineTool, paramsToJsonSchema, type AnyTool } from './types';
@@ -120,30 +122,75 @@ describe('worked examples', () => {
   it('leaves room for the rest of the turn inside the context reserve', () => {
     // Measured against the REAL registry, because the catalog grows every time
     // a tool is added and it is most of the prompt. The rest of the turn has to
-    // fit alongside it: the planning note (clock, date table, echoed request),
-    // the decisions and results the loop appends as it goes, and the capped
-    // final answer. Over-running does not fail loudly — it silently evicts the
-    // user's own messages from the front of the history.
-    const PLAN_NOTE = 150;
+    // fit alongside it: the per-turn reference block (clock, relative times,
+    // echoed request), the trailing instruction, the decisions and results the
+    // loop appends as it goes, and the capped final answer. Over-running does
+    // not fail loudly — it silently evicts the user's own messages from the
+    // front of the history.
+    const TURN_REFERENCE = 100;
+    const PLAN_INSTRUCTION = 60;
     const TOOL_TRAFFIC = 250; // two decisions and their results
     const ANSWER = 320; // ANSWER_MAX_TOKENS in loop.ts
     const system = estimateTokens(systemPrompt(realTools, new Date()).length);
-    expect(system + PLAN_NOTE + TOOL_TRAFFIC + ANSWER).toBeLessThan(TOOL_PROMPT_RESERVE);
+    expect(
+      system + TURN_REFERENCE + PLAN_INSTRUCTION + TOOL_TRAFFIC + ANSWER,
+    ).toBeLessThan(TOOL_PROMPT_RESERVE);
   });
 });
 
-describe('planNote', () => {
+describe('the date table', () => {
+  // The table used to be rendered into the per-turn note. It moved into the
+  // system prefix because it changes once a DAY and was costing a re-prefill
+  // once a TURN — but it MOVED, it was not trimmed, so every assertion that
+  // was written against it still has to hold.
+
+  it('lists every date a request might name, so weekdays are a lookup', () => {
+    // "Friday at 1pm" landed on Monday when the model had to work the date out
+    // for itself. Sunday 2026-08-02 → Friday is 2026-08-07.
+    const text = systemPrompt(realTools, new Date(2026, 7, 2, 13, 9));
+    expect(text).toContain('today 2026-08-02');
+    expect(text).toContain('tomorrow 2026-08-03');
+    expect(text).toContain('Friday 2026-08-07');
+    expect(text).toContain('This week means 2026-08-02 to 2026-08-08');
+  });
+
+  it('keeps all seven days, never just tomorrow', () => {
+    // A first attempt shipped only "Tomorrow is <date>" and made things worse:
+    // it was the single most salient date, so "this week" collapsed to
+    // today→tomorrow. Seven entries, or the failure comes back.
+    const text = systemPrompt(realTools, new Date(2026, 7, 2, 13, 9));
+    const dates = text.match(/2026-08-0[2-8]/g) ?? [];
+    expect(new Set(dates).size).toBe(7);
+  });
+
+  it('points the model at the table rather than at arithmetic', () => {
+    const text = systemPrompt(realTools, new Date());
+    expect(text).toMatch(/Never work out a date yourself/);
+    expect(text).toMatch(/copy it from the date list/);
+  });
+
+  it('rolls to local dates, not UTC ones', () => {
+    // The tools build a Date from these in the phone's zone; a UTC instant
+    // would shift every reminder by the offset (5.5h where this was written).
+    const text = systemPrompt(realTools, new Date(2026, 7, 2, 23, 30));
+    expect(text).toContain('today 2026-08-02');
+    expect(text).toContain('tomorrow 2026-08-03');
+  });
+});
+
+describe('turnReference', () => {
   it('carries the wall clock, which the system prefix omits', () => {
-    const note = planNote(new Date('2026-08-02T09:30:00Z'), []);
+    const note = turnReference(new Date('2026-08-02T09:30:00Z'));
     expect(note.content).toMatch(/Reference, not a request/);
     expect(note.content).toContain('Sunday');
   });
 
-  it('repeats the request last, so the decision sits next to it', () => {
-    // The note is a user message; once the date table went in it became the
+  it('repeats the request after the reference block', () => {
+    // The block is a user message; once the date table went in it became the
     // most recent user text and the planner started answering IT — "thanks,
-    // that is all" drew a web search for "current time".
-    const note = planNote(new Date(), [], 'Set an alarm for 7').content;
+    // that is all" drew a web search for "current time". The request is
+    // restated after the clock so the decision sits next to what was asked.
+    const note = turnReference(new Date(), 'Set an alarm for 7').content;
     expect(note).toMatch(/Reference, not a request/);
     expect(note.indexOf('What I actually asked you')).toBeGreaterThan(
       note.indexOf('Reference, not a request'),
@@ -152,55 +199,113 @@ describe('planNote', () => {
   });
 
   it('truncates a very long request rather than echoing an essay', () => {
-    const note = planNote(new Date(), [], 'x'.repeat(1000)).content;
+    const note = turnReference(new Date(), 'x'.repeat(1000)).content;
     expect(note).toContain('x'.repeat(300));
     expect(note).not.toContain('x'.repeat(301));
-  });
-
-  it('names the calls already spent this turn', () => {
-    const note = planNote(new Date(), ['list_calendar_events']);
-    expect(note.content).toContain('already called list_calendar_events');
-    expect(note.content).toMatch(/do not call it again/i);
   });
 
   it('pre-computes the relative clock times people actually say', () => {
     // Observed: at 13:09 the model answered "in an hour" with 13:09 — the
     // current time copied — and its retry moved it a day instead. It should
     // not be doing this arithmetic at all.
-    const note = planNote(new Date(2026, 7, 2, 13, 9), []).content;
+    const note = turnReference(new Date(2026, 7, 2, 13, 9)).content;
     expect(note).toContain('in 30 minutes it is 13:39');
     expect(note).toContain('in an hour 14:09');
     expect(note).toContain('in three hours 16:09');
-    // Fenced, or the model copies the minutes into "at 10pm" requests.
+    // Fenced, or the model copies the minutes into "at 10pm" requests. The
+    // fence and the values it fences must stay in the SAME message: splitting
+    // them is how "remind me at 10pm" became 10:59 PM.
     expect(note).toMatch(/Use ONLY if I say "in N minutes\/hours"/);
     expect(note).toMatch(/minute 0 unless I said a minute/);
   });
 
-  it('lists every date a request might name, so weekdays are a lookup', () => {
-    // "Friday at 1pm" landed on Monday when the model had to work the date out
-    // for itself. Sunday 2026-08-02 → Friday is 2026-08-07.
-    const note = planNote(new Date(2026, 7, 2, 13, 9), []).content;
-    expect(note).toContain('today 2026-08-02');
-    expect(note).toContain('tomorrow 2026-08-03');
-    expect(note).toContain('Friday 2026-08-07');
-    expect(note).toContain('This week means 2026-08-02 to 2026-08-08');
+  it('rolls the clock past midnight in local time, not UTC', () => {
+    expect(turnReference(new Date(2026, 7, 2, 23, 30)).content).toContain('in an hour 00:30');
   });
 
-  it('rolls the clock past midnight in local time, not UTC', () => {
-    // The tools build a Date from these in the phone's zone; a UTC instant
-    // would shift every reminder by the offset (5.5h where this was written).
-    const note = planNote(new Date(2026, 7, 2, 23, 30), []).content;
-    expect(note).toContain('in an hour 00:30');
-    expect(note).toContain('tomorrow 2026-08-03');
+  it('never carries the date table, which the system prefix now owns', () => {
+    // Rendering it in both places would pay for it once a turn AND once a day,
+    // which is strictly worse than either — and would give the model two copies
+    // to disagree about.
+    expect(turnReference(new Date(2026, 7, 2, 13, 9)).content).not.toContain('Friday 2026-08-07');
+  });
+});
+
+describe('planInstruction', () => {
+  it('names the calls already spent this turn', () => {
+    const note = planInstruction(['list_calendar_events']);
+    expect(note.content).toContain('already called list_calendar_events');
+    expect(note.content).toMatch(/do not call it again/i);
   });
 
   it('says nothing about spent calls on the first decision', () => {
-    expect(planNote(new Date(), []).content).not.toMatch(/already called/);
+    expect(planInstruction([]).content).not.toMatch(/already called/);
   });
 
   it('mentions a repeated tool once', () => {
-    const note = planNote(new Date(), ['echo', 'echo']);
-    expect(note.content.match(/echo/g)).toHaveLength(1);
+    expect(planInstruction(['echo', 'echo']).content.match(/echo/g)).toHaveLength(1);
+  });
+
+  it('stays inside the volatile-tail budget', () => {
+    // Re-evaluated by llama.cpp once per planning generation at 65-73 tok/s, so
+    // this is a latency ceiling and not a style rule. 231 chars ≈ 60 estimated
+    // tokens; eval/appendOnly.test.ts asserts the same bound end-to-end.
+    expect(planInstruction([]).content.length).toBeLessThanOrEqual(231);
+    expect(planInstruction(['list_calendar_events']).content.length).toBeLessThanOrEqual(231);
+  });
+
+  it('carries no clock, no dates and no echoed request', () => {
+    // Everything that is stable for the whole turn belongs in turnReference,
+    // which is rendered once. Anything that leaks back in here is paid again on
+    // every planning step.
+    const note = planInstruction(['echo']).content;
+    expect(note).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(note).not.toMatch(/Reference, not a request/);
+    expect(note).not.toMatch(/What I actually asked you/);
+  });
+});
+
+describe('legacyPlanNote', () => {
+  // The comparison seam. The corpus replays scripted responses, so it proves
+  // the new layout is append-only and proves nothing about whether a real
+  // planner still reads a date table that moved into the system prefix. That
+  // needs a harness running the real GGUF over both layouts, and this is how it
+  // renders the old one.
+
+  it('reproduces the layout the restructure replaced, byte for byte', () => {
+    expect(legacyPlanNote(new Date(2026, 7, 2, 13, 9), ['echo'], 'Set an alarm for 7').content)
+      .toBe(
+        '[Reference, not a request — it is 01:09 pm on Sunday, 2026-08-02. ' +
+          'Dates: today 2026-08-02, tomorrow 2026-08-03, Tuesday 2026-08-04, ' +
+          'Wednesday 2026-08-05, Thursday 2026-08-06, Friday 2026-08-07, ' +
+          'Saturday 2026-08-08. This week means 2026-08-02 to 2026-08-08. ' +
+          'Use ONLY if I say "in N minutes/hours": in 30 minutes it is 13:39, ' +
+          'in an hour 14:09, in three hours 16:09. If I name a time instead ' +
+          '("at 10pm", "at 7:30"), use exactly that, with minute 0 unless I said a minute.]\n' +
+          'You have already called echo this turn and the result is above — do not call it again.\n' +
+          'What I actually asked you: "Set an alarm for 7"\n' +
+          'Reply with exactly one JSON object: a tool call, or {"respond": true}.',
+      );
+  });
+
+  it('says nothing the new three-band layout does not also say', () => {
+    // The restructure MOVED text between bands; it did not drop any. Anything
+    // the old note told the model must still reach it, or this is a behaviour
+    // change wearing a latency change's clothes.
+    const at = new Date(2026, 7, 2, 13, 9);
+    const old = legacyPlanNote(at, ['echo'], 'Set an alarm for 7').content;
+    const now =
+      systemPrompt(realTools, at) +
+      '\n' +
+      turnReference(at, 'Set an alarm for 7').content +
+      '\n' +
+      planInstruction(['echo']).content;
+    // Sentence-level, because the pieces were re-punctuated when they split.
+    for (const fragment of old.split(/(?<=\.)\s+|\n/).filter((s) => s.trim().length > 12)) {
+      expect(now, `the new layout lost: ${fragment}`).toContain(
+        fragment.replace(/^\[|\]$/g, '').replace(/^Dates: /, ''),
+      );
+    }
   });
 });
 
