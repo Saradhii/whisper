@@ -441,3 +441,77 @@ Two honest caveats:
    no-tool turns, which still pay a full planning generation. A1 cannot close
    it. **Widening the fast path is the remaining work**, and it is gated on a
    real-model harness because the corpus cannot see the difference.
+
+---
+
+## The context-window ceiling — a product decision, not an optimization
+
+Found 2026-09-05 by re-deriving the context reserve against the post-A1 layout
+instead of carrying the old constant forward.
+
+**`TOOL_PROMPT_RESERVE` had been silently under-reserving.** It was a hand-tuned
+2816 with nothing connecting it to what it covers. Measured against the real
+prompt, on the *least* conservative ruler available (3.85 chars/token):
+
+    system + turnReference(300-char request) + answerNote, wrapped   2073 tok
+    + history (what 2816 leaves)                                     1280
+    + per-turn traffic (loop.ts's own: results 320 + wrappers 140)    460
+    + generated answer                                                320
+    ----------------------------------------------------------------------
+                                                                     4133 tok
+    against n_ctx                                                    4096
+
+**It overflows by 37 tokens**, and by more on the app's own 3.5 ruler. The peak
+is the ANSWER generation, not a planning step — `planInstruction` is one
+sentence, while the answer band is a note plus 320 generated tokens.
+
+This is the exact overflow `loop.ts` bounds tool results to keep unreachable,
+and it is not a soft failure. `ctx_shift` discards from the FRONT with `n_keep`
+pinned at 0, so the first thing evicted is the tool catalog and the JSON
+protocol — while the grammar keeps the output well-formed. The model then emits
+confident, valid-looking tool calls chosen from a catalog it can no longer see.
+
+**The reserve is now DERIVED** from the prompt that will actually be sent
+(`toolPromptReserve(tools, now)`), rather than hand-tuned, so a new tool costs
+history instead of silently breaking the turn, and every token trimmed from the
+prefix becomes conversation history with no second constant to remember.
+`TOOL_PROMPT_RESERVE` survives as the ratchet ceiling the derived value is
+asserted under.
+
+### The consequence
+
+Raising the reserve to a truthful 3200 leaves **~896 tokens of history at
+`n_ctx` 4096 — about four turns.** So the codebase's own invariant now says
+**4096 is insufficient for a tools-capable model with this prompt.**
+
+Trimming the prefix is exhausted. An independent pass established that the
+system message cannot go below ~1900 tokens without deleting worked examples or
+whole tool descriptions — the strongest lever this codebase has on a 1.7B — on
+the authority of an eval that cannot see the difference. The three slices are
+rules ~679, catalog ~722, examples ~608: there is no fat target.
+
+That leaves two ways out:
+
+1. **`n_ctx` 4096 → 8192.** History goes to ~5481 tokens. One line in
+   `catalog.ts`, zero accuracy risk. Gated entirely on whether the RAM fits —
+   being measured on device, along with whether the larger KV changes prefill
+   throughput, and what it does to the ~100 MB prefix KV snapshot whose size
+   scales with cache geometry.
+2. **Stop shipping tool capability on 4096-context models.** A product decision.
+
+This also reframes roadmap Phase 1: its history target (1280 → ~2500 tokens)
+should be aimed at `n_ctx`, not at the prefix. The prefix cannot deliver it.
+
+### A finding about our own gates, worth more than the tokens
+
+During the same pass, three rules were removed on the theory that each was
+redundant with a worked example. **Eval stayed 79/79 and all five `guarded`
+scenarios stayed green — and the removal was still wrong**, so it was reverted.
+A rule is the *generalisation* over its example, not a duplicate of it: the
+example is contacts→sms, while the corpus also contains contacts→dial_number and
+contacts→compose_email that the example never covers. Deleting the rule and
+keeping the example preserves the enumeration and discards the generalisation.
+
+That reasoning now lives in a comment above the Rules block, not just here,
+because the next person to trim tokens will read the code. **A green eval run is
+not permission to cut that block.**
