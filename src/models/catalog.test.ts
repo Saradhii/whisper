@@ -17,8 +17,8 @@ describe('catalog context windows', () => {
   // The bug this file was written for. app/index.tsx budgets an agent turn as
   // `max(512, nCtx - TOOL_PROMPT_RESERVE)`, and that floor hides the failure:
   // at nCtx 2048 the subtraction is negative, the floor quietly hands back 512,
-  // and the turn is then assembled from a ~2816-token reserve plus 512 tokens of
-  // history against a 2048-token window. llama.cpp does not refuse it — the
+  // and the turn is then assembled from a reserve of thousands of tokens (3200
+  // today) plus 512 tokens of history against a 2048-token window. llama.cpp does not refuse it — the
   // engine sets ctx_shift with n_keep pinned at 0, so the overflow is discarded
   // from the FRONT and eats the system message: the tool catalog and the worked
   // examples, the only place the model is told the tools exist. Requiring real

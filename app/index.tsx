@@ -239,8 +239,9 @@ export default function Chat() {
         if (cancelled) return;
         setLoadState({ id: spec.id });
         // Evaluate the agent's system message into the KV cache NOW, while the
-        // user is still looking at an empty chat. It is ~2000 tokens of tool
-        // catalog and worked examples, it is identical for every turn today,
+        // user is still looking at an empty chat. It is 7026 characters —
+        // ~1825 Qwen3 tokens — of tool catalog, worked examples and the
+        // seven-day date table, identical for every turn on a given day,
         // and until this ran it was evaluated for the first time inside the
         // user's first message — measured at 37.2s of a 41.2s opening turn.
         // Best-effort and unawaited: if it fails or the user sends first, the
