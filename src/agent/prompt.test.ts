@@ -401,3 +401,41 @@ describe('localDate', () => {
     expect(localDate(new Date(2026, 0, 3))).toBe('2026-01-03');
   });
 });
+
+describe('stable prefix', () => {
+  // The prewarm (app/index.tsx) renders agentPrefix(TOOLS) at load time; the
+  // turn (loop.ts) renders agentPrefix(tools, now) when the user sends. They
+  // are the same function, so they agree — but ONLY if the system message
+  // contains nothing that ticks faster than the value they can disagree about.
+  //
+  // That invariant is what the whole prewarm and the on-disk prefix KV snapshot
+  // rest on, and prompt.ts warns that breaking it fails SILENTLY: the prefix is
+  // simply never matched again, the turn is as slow as it always was, and
+  // nothing says the optimization stopped working. A clock, a seconds field, or
+  // anything derived from Date.now() landing in systemPrompt() would do it.
+  //
+  // So: the system message must be byte-identical for any two instants on the
+  // same calendar day, and must differ across days (the date table is real).
+  it('is byte-identical across a whole day, so a prewarm still matches the turn', () => {
+    const justAfterMidnight = new Date(2026, 8, 5, 0, 0, 1);
+    const midMorning = new Date(2026, 8, 5, 9, 41, 17);
+    const justBeforeMidnight = new Date(2026, 8, 5, 23, 59, 59);
+    const a = systemPrompt(realTools, justAfterMidnight);
+    expect(systemPrompt(realTools, midMorning)).toBe(a);
+    expect(systemPrompt(realTools, justBeforeMidnight)).toBe(a);
+  });
+
+  it('does change across days, so the date table is genuinely live', () => {
+    const today = systemPrompt(realTools, new Date(2026, 8, 5, 12, 0));
+    const tomorrow = systemPrompt(realTools, new Date(2026, 8, 6, 12, 0));
+    expect(tomorrow).not.toBe(today);
+  });
+
+  // The volatile half is allowed — indeed required — to tick, and it lives
+  // after the cached region precisely so it can.
+  it('keeps the ticking clock OUT of the stable prefix and IN the turn note', () => {
+    const t1 = new Date(2026, 8, 5, 9, 0);
+    const t2 = new Date(2026, 8, 5, 17, 30);
+    expect(turnReference(t1, 'hello').content).not.toBe(turnReference(t2, 'hello').content);
+  });
+});
