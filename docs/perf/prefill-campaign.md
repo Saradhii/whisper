@@ -252,3 +252,68 @@ to an even token count is close to free. Being A/B'd.
 `n_keep` remains settable natively but absent from llama.rn's `src/types.ts`,
 so it is unreachable from JS. The comment in `loop.ts` saying so is correct and
 the `TURN_RESULT_TOKENS` rationale built on it stands.
+
+---
+
+## Acceptance targets — what "close to frontier, but local" means numerically
+
+Set 2026-09-05. A goal that cannot be failed is not a goal, so these are the
+numbers the campaign is judged on.
+
+**The reference experience.** A frontier chat app over an API shows its first
+token in roughly 0.5-1.5s and finishes a short answer in 2-4s. That is the bar,
+and the honest part of the comparison is that a 1.7B model on a phone has to
+reach it with a much smaller compute budget and no network.
+
+**What the user actually perceives is time-to-first-token, not turn duration.**
+A frontier app feels fast largely because it starts streaming almost
+immediately. This app cannot stream until the whole planning generation has
+finished, so TTFT today is plan prefill + plan decode + (tool) + answer prefill.
+That chain, not the total, is what makes it feel slow.
+
+### Targets on a real phone (8 GB Snapdragon class)
+
+| | target | notes |
+|---|---|---|
+| TTFT, conversational turn | **< 1.0s** | no tool; should feel instant |
+| TTFT, tool turn | **< 2.0s** | plan, run, then start answering |
+| Complete short answer | **< 3.0s** | end of stream |
+| Cold start (first turn of a session) | **within 1.5x of warm** | prefix KV snapshot is what makes this possible |
+
+### Proxy targets on the test AVD
+
+The AVD is 4 cores (one of them stolen by an unrelated nine-day `python3.14`
+process) and measures roughly 3x slower than the phone class above. Until a
+physical device is attached, multiply by ~3:
+
+| | AVD target | today |
+|---|---|---|
+| TTFT, conversational turn | < 3.0s | ~5.0s fast-pathed, ~12.1s otherwise |
+| TTFT, tool turn | < 6.0s | — |
+| Complete turn | < 9.0s | 12.1s warm, 13.8s cold |
+
+**These proxy numbers are a stand-in and must not be quoted as the product's
+performance.** Token counts transfer between machines; tok/s does not. The
+campaign's real claim needs one run on the physical test phone.
+
+### What has to be true to hit them
+
+1. **A1, append-only prompt layout.** Removes the per-generation rebuild. The
+   largest single item.
+2. **Prefix KV persisted to disk.** Removes cold start as a separate case.
+   Shipped in `2eba7ed`, unverified on device.
+3. **A3, collapse the plan and answer generations** (`grammar_lazy`). This is
+   the one that moves TTFT rather than total duration: on a turn needing no
+   tool, the model would begin streaming the answer immediately instead of after
+   a complete planning generation. Conversational turns are the majority, so
+   this is the biggest perceived-speed change available.
+4. Everything else — parity padding, ubatch, thread splits — is a multiplier on
+   an already-small number and should be measured, not assumed.
+
+### Where the remaining risk is
+
+Accuracy, not speed. The eval corpus replays scripted responses, so the prompt
+changes that produce most of the speed cannot be shown safe by it. The
+host-side real-model harness is the gate; a fast assistant that picks the wrong
+tool is not usable, and this project's own worst shipped bug was narrating an
+action instead of performing it.
