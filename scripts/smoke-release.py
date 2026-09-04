@@ -103,7 +103,16 @@ def main():
     say("launching")
     sh("shell", "am", "force-stop", PKG)
     time.sleep(1)
-    sh("shell", "monkey", "-p", PKG, "-c", "android.intent.category.LAUNCHER", "1")
+    # `am start -n` rather than `monkey`: monkey silently started nothing on the
+    # test AVD (it printed its usual banner, left focus on the home screen, and
+    # the app had no pid), which read as a launch crash and nearly got a
+    # perfectly good release build reported as broken. `am start` names the
+    # component explicitly and reports what it did. Note this is the inverse of
+    # the DEV build, where `am start -n .MainActivity` opens the dev-launcher
+    # menu — but a release build has no dev launcher, so it is correct here.
+    launched = sh("shell", "am", "start", "-n", f"{PKG}/.MainActivity")
+    if "Error" in launched or "does not exist" in launched:
+        say(f"  am start said: {launched.strip().splitlines()[-1] if launched.strip() else '(nothing)'}")
 
     # Alive after 20s means it got past init, not merely that it started.
     time.sleep(20)
@@ -138,13 +147,6 @@ def main():
     else:
         check("drawer menu found", False)
 
-    say("opening Settings and the trace screen")
-    sh("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "whisper://agent-trace", PKG)
-    time.sleep(4)
-    tx = dump()
-    check("Agent trace screen opens", "Agent trace" in tx or "Trajectory" in tx)
-    back()
-
     say("one full turn (this needs a downloaded model; may take minutes)")
     xml = dump()
     c = find(xml, "Ask anything")
@@ -168,6 +170,15 @@ def main():
               "" if turn_ok else "no reply within 10 min (is a model downloaded?)")
     else:
         check("composer available for a turn", False)
+
+    # LAST, deliberately: the trace screen is reached by deep link and has no
+    # back-stack to the chat — one BACK goes nowhere and two leave the app. Any
+    # check needing the composer must therefore run BEFORE this one.
+    say("opening Settings and the trace screen")
+    sh("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", "whisper://agent-trace", PKG)
+    time.sleep(4)
+    tx = dump()
+    check("Agent trace screen opens", "Agent trace" in tx or "Trajectory" in tx)
 
     say("scanning logcat")
     # Filter to OUR process. Scanning the whole buffer flags unrelated system
