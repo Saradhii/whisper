@@ -8,9 +8,12 @@
 // failure the harness never had. Three facts about the loop drive every matcher
 // below, and all three are load-bearing:
 //
-//   1. `planNote()` is appended AFTER the history for a planning turn and
-//      nowhere else, so its tail — "…a tool call, or {"respond": true}." — is
-//      present in exactly the planning generations.
+//   1. `planInstruction()` is the trailing message of a planning prompt and of
+//      nothing else, so its sentence — "…a tool call, or {"respond": true}." —
+//      is present in exactly the planning generations. (It used to be the tail
+//      of a much larger `planNote`; the note's stable half moved into the
+//      system prefix and its per-turn half into `turnReference`, which is why
+//      the matcher below keys on the sentence rather than on the clock.)
 //   2. `answerNote()` opens every answer generation with "Now reply to me
 //      directly", and a planning prompt never contains it.
 //   3. After a call runs, `record()` pushes the RAW decision text back into the
@@ -39,7 +42,7 @@ export function scenarios(list: ScenarioInput[]): ScenarioInput[] {
   return list;
 }
 
-/** Unique to the tail of `planNote()` — present in planning generations only. */
+/** Unique to `planInstruction()` — present in planning generations only. */
 export const PLAN = 'a tool call, or {"respond": true}';
 
 /** Unique to the head of `answerNote()` — present in answer generations only. */
@@ -100,8 +103,8 @@ export function noTool(answer: string): ScriptedResponse[] {
  * examples are the obvious thing to cut.
  *
  * `guard` must be text that appears ONLY in the stable prefix. A phrase that
- * also occurs in the user's own words would be echoed back by `planNote()` and
- * match no matter what the system message says.
+ * also occurs in the user's own words would be echoed back by `turnReference()`
+ * and match no matter what the system message says.
  */
 export function noToolUnlessTaught(
   guard: string,

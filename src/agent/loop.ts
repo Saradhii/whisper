@@ -20,9 +20,10 @@ import type {
 } from '@/src/engines/types';
 
 import * as Recorder from './eval/recorder';
+import { divergence, promptSize } from './eval/promptSize';
 import { buildToolGrammar, parseDecision } from './grammar';
 import { skipsPlanning } from './fastPath';
-import { agentPrefix, answerNote, planNote } from './prompt';
+import { agentPrefix, answerNote, planInstruction, turnReference } from './prompt';
 import * as Trace from './trace';
 import { InvalidArguments, type AnyTool } from './types';
 
@@ -45,8 +46,9 @@ const MAX_CALLS_PER_TOOL = 2;
  * which is more than the whole turn has to spend.
  *
  * The arithmetic, at a planning step, is:
- *   system(1801) + history(1280) + accumulated + planNote(286) + generate(256)
- * against nCtx 4096, leaving ~473 tokens for everything the turn accumulates.
+ *   system(1804) + history(1280) + turnReference(~95) + accumulated
+ *     + planInstruction(~40) + generate(256)
+ * against nCtx 4096, leaving ~620 tokens for everything the turn accumulates.
  * Decisions and per-message template overhead take ~140 of that across four
  * steps, so the results themselves get ~320.
  *
@@ -175,6 +177,40 @@ function timingLabel(t?: GenerateTimings): string {
   );
 }
 
+/**
+ * Character-level attribution for the same prefill, alongside llama.cpp's own
+ * token-level counters.
+ *
+ * `n_past` in logcat says HOW MUCH a generation re-evaluated; nothing on the
+ * device says WHAT. A reading of the emulator log put one turn's rebuilt tail
+ * at ~720 tokens, which is four times anything rendering this module's output
+ * in Node can account for — so the difference is in the conversation, the tool
+ * traffic, or the template, and there was no way to tell which. This closes
+ * that: it names how many characters are new and how many whole messages the
+ * prompt still shares with the last one.
+ *
+ * Module state, not turn state, and deliberately: the KV cache does not reset
+ * between turns either, so the first generation of turn 2 is measured against
+ * what turn 1 left behind. Scoping this to one `runAgent` call would report
+ * that generation as rebuilding the whole prompt, which is the exact mistake
+ * this exists to stop people making.
+ *
+ * Rendered only while the developer trace is recording, because it stringifies
+ * the entire prompt.
+ */
+let lastPrompt: AgentMessage[] = [];
+
+function tailLabel(prompt: AgentMessage[]): string {
+  const prev = lastPrompt;
+  lastPrompt = prompt;
+  if (!Trace.isEnabled()) return '';
+  const d = divergence(prev, prompt);
+  return (
+    ` [new ${d.reEvaluatedChars}c of ${promptSize(prompt).chars}c` +
+    ` | shares ${d.sharedMessages}/${prompt.length} msgs]`
+  );
+}
+
 export async function runAgent(
   engine: Engine,
   tools: AnyTool[],
@@ -182,13 +218,32 @@ export async function runAgent(
   { onEvent, confirm, signal }: AgentCallbacks,
   now: Date = new Date(),
 ): Promise<void> {
-  // The user's own words, repeated in the planning note so the decision is made
-  // next to the request rather than next to the reference block.
+  // The user's own words, repeated in the turn reference so the decision is
+  // made next to the request rather than next to the reference block.
   const lastRequest = [...history].reverse().find((m) => m.role === 'user')?.content ?? '';
   const byName = new Map(tools.map((t) => [t.name, t]));
   const names = tools.map((t) => t.name);
   const grammar = buildToolGrammar(names);
-  const messages: AgentMessage[] = [...agentPrefix(tools, now), ...history];
+
+  // A greeting is not a decision — see fastPath.ts, and the "plan" phase below.
+  // Decided here rather than at the loop, because it also decides whether the
+  // turn needs a reference block at all.
+  const plans = !skipsPlanning(lastRequest);
+
+  // THE PROMPT IS APPEND-ONLY FROM HERE DOWN. `messages` is built once and only
+  // ever grown; each generation renders it plus ONE trailing instruction. That
+  // is what lets llama.cpp serve every earlier token from the KV cache instead
+  // of re-evaluating the turn from the history onwards on every step.
+  //
+  // The reference block is omitted entirely on the fast path. It is 250-odd
+  // characters the answer would have to evaluate for a "thanks", and a greeting
+  // is the one turn shape whose whole point is that it costs a single
+  // generation. A turn that never plans has no decision for a clock to inform.
+  const messages: AgentMessage[] = [
+    ...agentPrefix(tools, now),
+    ...history,
+    ...(plans ? [turnReference(now, lastRequest)] : []),
+  ];
 
   // Corpus capture for the eval harness (eval/recorder.ts). Off by default and
   // a no-op until the user turns it on; the loop never branches on it, so the
@@ -219,11 +274,15 @@ export async function runAgent(
 
   // Timings of the most recent generation, folded into its trace row.
   let planTimings: GenerateTimings | undefined;
+  // How much of that generation's prompt was new, in characters — see
+  // tailLabel, which carries across turns because the cache does.
+  let planTail = '';
 
   /** One grammar-constrained planning turn. */
   const plan = async (g: string) => {
     const started = Date.now();
-    const prompt = [...messages, planNote(now, called, lastRequest)];
+    const prompt = [...messages, planInstruction(called)];
+    planTail = tailLabel(prompt);
     const res = await engine.generate(prompt, () => {}, {
       grammar: g,
       disableThinking: true,
@@ -369,7 +428,7 @@ export async function runAgent(
     // the grammar isn't constraining the sampler, which is a different (and
     // much worse) problem than the model choosing to answer.
     if (decision.kind === 'tool') {
-      Trace.add('plan', `${forced ? 'forced ' : ''}call ${decision.name}${timingLabel(planTimings)}`, {
+      Trace.add('plan', `${forced ? 'forced ' : ''}call ${decision.name}${timingLabel(planTimings)}${planTail}`, {
         detail: res.text,
         ms,
       });
@@ -379,7 +438,7 @@ export async function runAgent(
         ms,
       });
     } else {
-      Trace.add('plan', `respond without acting${timingLabel(planTimings)}`, {
+      Trace.add('plan', `respond without acting${timingLabel(planTimings)}${planTail}`, {
         detail: res.text,
         ms,
       });
@@ -397,7 +456,7 @@ export async function runAgent(
   // straight to the answer. The gate is a closed pleasantry vocabulary and
   // fails toward planning; see fastPath.ts for why it is built that way, and
   // fastPath.test.ts for the property that keeps it honest.
-  if (skipsPlanning(lastRequest)) {
+  if (!plans) {
     Trace.add('plan', 'skipped planning — conversational turn', { detail: lastRequest, ms: 0 });
   } else {
     for (let i = 0; i < MAX_STEPS; i++) {
@@ -430,7 +489,19 @@ export async function runAgent(
     Recorder.abandon();
     return;
   }
+  // Usually the answer prompt is the last planning prompt with its trailing
+  // instruction swapped for this one — same prefix, same reference block, same
+  // decisions and results, in the same order — so it re-evaluates 340 warm
+  // characters and nothing else.
+  //
+  // The exception is a turn that ended WITHOUT a final {"respond": true}:
+  // repeat suppression returned 'exhausted', or MAX_STEPS ran out. Then a
+  // decision and a result sit where the planning prompt had its instruction,
+  // and those get evaluated here instead. That is not waste — they are new
+  // either way — but it is why a cache log can show the answer phase diverging
+  // early and it does not mean a prefix was thrown away.
   messages.push(answerNote({ ran, acted, failed: failures, denied: denials }));
+  const answerTail = tailLabel(messages);
   const started = Date.now();
   let streamed = '';
   const res = await engine.generate(
@@ -474,7 +545,7 @@ export async function runAgent(
     return;
   }
 
-  Trace.add('answer', `answered after ${ran} tool call(s)${timingLabel(res.timings)}`, {
+  Trace.add('answer', `answered after ${ran} tool call(s)${timingLabel(res.timings)}${answerTail}`, {
     detail: `${(streamed || res.text).trim().length} chars`,
     ms: Date.now() - started,
   });

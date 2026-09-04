@@ -6,10 +6,25 @@
 // no engine, no Expo — so the whole prompt is asserted in Node.
 //
 // Two constraints shape the layout:
-//   * KV-cache reuse. llama.cpp reprefills from the first byte that differs, so
-//     everything stable (identity, tool catalog, examples) lives in the system
-//     message and everything that ticks (the wall clock, what has run so far)
-//     goes in a note appended AFTER the history.
+//   * KV-cache reuse. llama.cpp reprefills from the first byte that differs, and
+//     a single turn runs two to five generations against the same context — so
+//     the prompt is built in THREE bands, each rewritten less often than the one
+//     after it:
+//
+//       systemPrompt      once a day   identity, catalog, examples, date table
+//       turnReference     once a turn  the wall clock and the relative times
+//       (decisions/results)            appended as the turn runs
+//       planInstruction   every step   the smallest thing that steers a decision
+//
+//     Only the last band is re-evaluated between planning steps. It was not
+//     always this way: the clock, the date table and the echoed request used to
+//     be rendered fresh into a note that trailed every planning prompt, so step
+//     2 diverged from step 1's cache where step 1's note began and paid for the
+//     decision, the result AND a new ~620-character note. `adb logcat` on the
+//     test AVD showed single generations re-evaluating 365, 378, 492 and once
+//     1079 prompt tokens — about 20 seconds at 65-73 tok/s — to emit five tokens
+//     of JSON. eval/appendOnly.test.ts is the specification that keeps the bands
+//     separate; eval/promptSize.ts is how it is measured.
 //   * The model is 1-2B. It gets a worked transcript for each behaviour we
 //     care about, and rules phrased as consequences ("it happens TWICE") rather
 //     than as policy.
@@ -21,9 +36,10 @@ import type { AnyTool } from './types';
 /**
  * Context tokens the chat screen holds back for an agent turn, leaving the rest
  * for conversation history. It has to cover the whole of this module's output —
- * the system message (~1900 tokens with the full catalog and examples), the
- * per-turn note, the decisions and results the loop appends as it runs, and the
- * bounded final answer. Under-reserving doesn't fail loudly; it silently evicts
+ * the system message (~1900 tokens with the full catalog, examples and date
+ * table), the per-turn reference block, the trailing instruction, the decisions
+ * and results the loop appends as it runs, and the bounded final answer.
+ * Under-reserving doesn't fail loudly; it silently evicts
  * the user's own messages from the front of the history. prompt.test.ts pins
  * the system message against it.
  */
@@ -59,14 +75,23 @@ export function toolCatalog(tools: AnyTool[]): string {
 }
 
 /**
- * The stable prefix: identity, the protocol, the tool catalog, the rules, and
- * the worked examples. Carries the DATE but not the time of day — a clock in
- * here would invalidate the cached prefix on every single turn.
+ * The stable prefix: identity, the protocol, the tool catalog, the rules, the
+ * worked examples, and the seven-day date table.
+ *
+ * Carries every DATE the turn could need but not the time of day. That split is
+ * the whole point: a date table changes once a day, so it costs one re-prefill
+ * a day sitting here and one per TURN sitting anywhere else — and the prewarm
+ * (see agentPrefix) warms it for free along with the catalog. A clock in here
+ * would invalidate the cached prefix on every single turn, which is why the
+ * wall clock and the relative times live in turnReference() instead.
  */
 export function systemPrompt(tools: AnyTool[], now: Date): string {
   return [
     `You are Whisper, a helpful assistant running fully on the user's phone.`,
     `Today's date is ${localDate(now)}.`,
+    ``,
+    `Dates (copy from this list, never work one out):`,
+    dateAnchors(now),
     ``,
     `You do real things on this phone by calling tools. On each planning turn,`,
     `reply with EXACTLY ONE JSON object and nothing else:`,
@@ -91,9 +116,9 @@ export function systemPrompt(tools: AnyTool[], now: Date): string {
     `  such as looking up a number before texting it.`,
     `- An empty or disappointing result ("No events in that range.") is still`,
     `  the answer. Report it. Do not look again.`,
-    `- Never work out a date yourself: copy it from the date list in the note`,
-    `  below the conversation, and never copy one out of these examples. Hours`,
-    `  are on a 24-hour clock, so 1pm is 13 and 6pm is 18.`,
+    `- Never work out a date yourself: copy it from the date list near the top`,
+    `  of this message, and never copy one out of these examples. Hours are on a`,
+    `  24-hour clock, so 1pm is 13 and 6pm is 18.`,
     `- If no tool does what was asked — there is no way to delete or edit`,
     `  anything — say so plainly. Never substitute a tool that does something`,
     `  else, and never one that does the opposite of what was asked.`,
@@ -124,22 +149,101 @@ export function systemPrompt(tools: AnyTool[], now: Date): string {
  * prewarm that renders even one byte differently warms a prefix llama.cpp
  * will not match, and the failure is silent — the turn is simply as slow as it
  * always was, with nothing to show that the optimization stopped working.
+ *
+ * That contract now covers the date table too. Warming this prefix costs ~1804
+ * prompt tokens and ~28 seconds of wall clock on the test AVD; anything moved
+ * INTO it is warmed for free, and anything that renders differently here than
+ * it does in the turn throws all 28 seconds away without saying so.
  */
 export function agentPrefix(tools: AnyTool[], now: Date = new Date()): AgentMessage[] {
   return [{ role: 'system', content: systemPrompt(tools, now) }];
 }
 
 /**
- * The trailing instruction for a planning turn: the wall clock the system
- * prompt deliberately omits, plus what has already run this turn.
+ * The per-turn reference block: the wall clock the system prefix deliberately
+ * omits, the relative times computed off it, and the user's own request.
+ *
+ * Placed ONCE, immediately after the history, and never re-rendered while the
+ * turn runs. That position is chosen deliberately and both halves of it matter:
+ *
+ *   * after the history, not before it, because the history is the LARGEST
+ *     stable region in the prompt (up to 1280 tokens — see historyBudget.ts).
+ *     A clock rendered ahead of it would move every byte of it on every turn
+ *     and force a full re-prefill of the conversation, which is a far bigger
+ *     loss than anything this reorganisation wins back.
+ *   * once, not per step, because within a turn the clock does not usefully
+ *     tick and the request does not change. Everything the loop appends after
+ *     this message — decisions, results — then extends the cache instead of
+ *     invalidating it.
+ *
+ * It is a USER message, and it used to be the longest and most recent user text
+ * in the window — so the planner started answering IT instead of the person.
+ * "Thanks that is all for now" was met with a web search for "current time",
+ * lifted straight out of "It is currently…". Both halves of that fix survive
+ * here: the clock is labelled as reference material, and the real request is
+ * repeated after it. What has changed is that this is no longer the last thing
+ * the model reads — planInstruction() is, and it is one sentence long — so the
+ * note is materially LESS salient at the decision point than it was when the
+ * failure was observed, not more.
+ */
+export function turnReference(now: Date, request = ''): AgentMessage {
+  const clock = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  const weekday = now.toLocaleDateString(undefined, { weekday: 'long' });
+  const asked = request.trim().slice(0, 300);
+  return {
+    role: 'user',
+    content:
+      `[Reference, not a request — it is ${clock} on ${weekday}, ${localDate(now)}. ` +
+      `${relativeTimes(now)}]` +
+      (asked ? `\nWhat I actually asked you: "${asked}"` : ''),
+  };
+}
+
+/**
+ * The trailing instruction for one planning step, and nothing else.
+ *
+ * This is the only part of a planning prompt that is rewritten between steps,
+ * so every character in it is re-evaluated once per generation at 65-73 tok/s.
+ * It is kept to a spent-calls line and one sentence of protocol; the budget is
+ * asserted in eval/appendOnly.test.ts.
  *
  * Listing the calls already made is the prompt-side half of the loop's repeat
- * suppression. On device the planner would decide `list_calendar_events`, read
- * its own result, and — the context still looking exactly like a request to
- * read the calendar — decide it again, five times over. Naming the spent calls
- * right before the decision point is what breaks that symmetry.
+ * suppression, and it has to be HERE rather than in the reference block because
+ * it is the one thing that genuinely changes from step to step. On device the
+ * planner would decide `list_calendar_events`, read its own result, and — the
+ * context still looking exactly like a request to read the calendar — decide it
+ * again, five times over. Naming the spent calls right before the decision
+ * point is what breaks that symmetry.
  */
-export function planNote(
+export function planInstruction(calledTools: string[] = []): AgentMessage {
+  const spent = [...new Set(calledTools)];
+  return {
+    role: 'user',
+    content:
+      (spent.length
+        ? `You have already called ${spent.join(' and ')} this turn and the ` +
+          `result is above — do not call it again.\n`
+        : '') + `Reply with exactly one JSON object: a tool call, or {"respond": true}.`,
+  };
+}
+
+/**
+ * The PRE-append-only layout: one note carrying the clock, the date table, the
+ * spent calls, the echoed request and the protocol line, rendered fresh after
+ * the history on every planning step.
+ *
+ * Kept, and exported, for one reason: the eval corpus replays SCRIPTED model
+ * responses, so it can prove the new layout is structurally append-only and it
+ * cannot prove a real planner still gets dates right when the table moved into
+ * the system prefix. That has to be settled by a harness running the real GGUF
+ * against real rendered prompts, and such a harness needs BOTH layouts to
+ * compare. This is the seam it renders the old one through — nothing in the app
+ * calls it, and when the A/B has a verdict it should be deleted.
+ *
+ * It is composed from the same pieces the live layout uses so the two cannot
+ * drift apart on wording while the comparison is still open.
+ */
+export function legacyPlanNote(
   now: Date,
   calledTools: string[] = [],
   request = '',
@@ -147,19 +251,12 @@ export function planNote(
   const clock = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   const weekday = now.toLocaleDateString(undefined, { weekday: 'long' });
   const spent = [...new Set(calledTools)];
-  // The note is a USER message, and once the date table went in it became the
-  // longest and most recent user text in the window — so the planner started
-  // answering the note instead of the person. "Thanks that is all for now" was
-  // met with a web search for "current time", lifted straight out of "It is
-  // currently…". Hence both halves of the fix: the clock is labelled as
-  // reference material, and the real request is repeated last, right where the
-  // decision gets made.
   const asked = request.trim().slice(0, 300);
   return {
     role: 'user',
     content:
       `[Reference, not a request — it is ${clock} on ${weekday}, ${localDate(now)}. ` +
-      `${anchors(now)}]\n` +
+      `Dates: ${dateAnchors(now)} ${relativeTimes(now)}]\n` +
       (spent.length
         ? `You have already called ${spent.join(' and ')} this turn and the ` +
           `result is above — do not call it again.\n`
@@ -170,36 +267,49 @@ export function planNote(
 }
 
 /**
- * A lookup table in place of arithmetic.
+ * A lookup table in place of arithmetic — the half of it that ticks.
  *
  * Qwen3 1.7B cannot do clock or calendar maths. On device: "in an hour" at
  * 13:09 came back as 13:09; "6pm today" became 16:00; "Friday at 1pm" landed on
- * Monday at noon. A first attempt at this shipped only "Tomorrow is <date>",
- * which made things worse — it was the single most salient date in the note, so
- * "this week" collapsed to today→tomorrow and stray events landed on tomorrow.
+ * Monday at noon. The dates are the other half and live in systemPrompt(),
+ * because they only change at midnight; these three offsets move with the clock
+ * and so cannot.
  *
- * The fix is to give every date the model might need, as a list it can copy
- * from, plus the two or three relative clock times people actually say. Copying
- * from a table is the one thing a small model does reliably. This lives in the
- * volatile note, so it costs nothing in KV-cache terms.
+ * The relative times are fenced off behind "only if". Unfenced, they leak:
+ * "in an hour 22:59" sitting in the note turned "remind me at 10pm" into
+ * 10:59 PM. The fence and the values it fences stay in the same sentence, and
+ * in the same message, for that reason — splitting them to save a few tokens
+ * would be saving tokens out of the thing that stops the leak.
  */
-function anchors(now: Date): string {
+function relativeTimes(now: Date): string {
   const hhmm = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const plus = (minutes: number) => hhmm(new Date(+now + minutes * 60_000));
+  return (
+    `Use ONLY if I say "in N minutes/hours": in 30 minutes it is ${plus(30)}, in an hour ${plus(60)}, in three hours ${plus(180)}. ` +
+    `If I name a time instead ("at 10pm", "at 7:30"), use exactly that, with minute 0 unless I said a minute.`
+  );
+}
+
+/**
+ * Every date a request might name, as a list to copy from.
+ *
+ * A first attempt at this shipped only "Tomorrow is <date>", which made things
+ * WORSE — it was the single most salient date in the prompt, so "this week"
+ * collapsed to today→tomorrow and stray events landed on tomorrow. The full
+ * table is the fix, and it is a table because copying from one is the single
+ * thing a small model does reliably. It is moved here from the per-turn note,
+ * not trimmed: every line of it is still rendered.
+ */
+function dateAnchors(now: Date): string {
   const days = [0, 1, 2, 3, 4, 5, 6].map((i) => {
     const d = new Date(+now + i * 86_400_000);
     const name = d.toLocaleDateString(undefined, { weekday: 'long' });
     const tag = i === 0 ? 'today' : i === 1 ? 'tomorrow' : name;
     return `${tag} ${localDate(d)}`;
   });
-  // The relative times are fenced off behind "only if". Unfenced, they leak:
-  // "in an hour 22:59" sitting in the note turned "remind me at 10pm" into
-  // 10:59 PM — the same copying that made an earlier "Tomorrow is <date>" line
-  // swallow every date range.
   return (
-    `Dates: ${days.join(', ')}. This week means ${localDate(now)} to ${localDate(new Date(+now + 6 * 86_400_000))}. ` +
-    `Use ONLY if I say "in N minutes/hours": in 30 minutes it is ${plus(30)}, in an hour ${plus(60)}, in three hours ${plus(180)}. ` +
-    `If I name a time instead ("at 10pm", "at 7:30"), use exactly that, with minute 0 unless I said a minute.`
+    `${days.join(', ')}. ` +
+    `This week means ${localDate(now)} to ${localDate(new Date(+now + 6 * 86_400_000))}.`
   );
 }
 
