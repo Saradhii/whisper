@@ -26,6 +26,27 @@ Hermes stores a string as UTF-16 if it contains any non-ASCII character, so
 grep and reads as a stale build. Confirmed present: `Never search` (ascii),
 `skipped planning` (utf-16), `Reference, not a request` (utf-16).
 
+> **This pinned APK predates the context-reserve fix.** `TOOL_PROMPT_RESERVE`
+> was a hand-tuned 2816 that measured, against the real prompt, as 4133 tokens
+> needed versus an `n_ctx` of 4096 — it overflowed. `ctx_shift` discards from
+> the FRONT with `n_keep` pinned at 0, so the first thing evicted is the tool
+> catalog and the JSON protocol, while the grammar keeps the output looking
+> well-formed: a confidently wrong tool call. Fixed on main after this build by
+> deriving the reserve from the prompt actually sent (now 3200).
+>
+> Consequence for a run against THIS APK: prefill, TTFT and the cache/prefill
+> columns are still valid — they are short turns that never approach the limit.
+> **Long-turn behaviour is not trustworthy**, so do not judge tool correctness on
+> a multi-step turn with this build, and do not compare long-turn results across
+> the two builds.
+>
+> Note also that the fix costs conversation memory: `historyBudget` is
+> `nCtx - reserve`, so agent-mode history falls from **1280 to 896 tokens**. That
+> is the right trade — a silently truncated catalog is far worse than a shorter
+> memory — but it is a user-visible change, and worth a subjective check on the
+> phone that the assistant does not lose the thread too early in a tool
+> conversation.
+
 > Provenance is not pedantry here. Two earlier builds of this APK were thrown
 > away because agents committed to `main` while `expo prebuild && gradlew
 > assembleRelease` was reading the working tree over ~6 minutes, so the bundle
@@ -184,6 +205,13 @@ These cost hours on the emulator. Most still apply to a phone.
 - **The Send button moves when the keyboard opens.** Any scripted tap must read
   its live bounds; a fixed coordinate once launched Google Lens mid-run.
 - **`adb shell input text` needs `%s` for spaces.**
+- **Verifying a bundle: grep BOTH ASCII and UTF-16-LE.** Hermes stores a string
+  as UTF-16 if it contains any non-ASCII character, and the two encodings are
+  mixed within one bundle. On this very APK, `"Never search"` was found as ASCII
+  while `"skipped planning"` (an em dash later in the same literal) and
+  `"Reference, not a request"` existed only as UTF-16. An ASCII-only grep
+  reports a current build as stale and costs you a needless rebuild — it nearly
+  did here.
 - **A release build does not need the dev-client deep link.** `monkey -p … 1`
   or `am start -n com.whisper.app/.MainActivity` opens the app directly. (On the
   *dev* build, `am start -n .MainActivity` opens the dev-launcher menu instead,
