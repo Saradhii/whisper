@@ -116,7 +116,7 @@ export function toolPromptReserve(tools: AnyTool[], now: Date = new Date()): num
   // turn that does name a time.
   const reference = turnReference(now, `7 ${'x'.repeat(298)}`);
   return (
-    estimate(systemPrompt(tools, now).length) +
+    estimate(systemPrompt(tools).length) +
     estimate(reference.content.length) +
     TOOL_TRAFFIC_TOKENS +
     trailingBandTokens() +
@@ -198,13 +198,9 @@ export function toolCatalog(tools: AnyTool[]): string {
  * would invalidate the cached prefix on every single turn, which is why the
  * wall clock and the relative times live in turnReference() instead.
  */
-export function systemPrompt(tools: AnyTool[], now: Date): string {
+export function systemPrompt(tools: AnyTool[]): string {
   return [
     `You are Whisper, a helpful assistant running fully on the user's phone.`,
-    `Today's date is ${localDate(now)}.`,
-    ``,
-    `Dates (copy from this list, never work one out):`,
-    dateAnchors(now),
     ``,
     `You do real things on this phone by calling tools. On each planning turn,`,
     `reply with EXACTLY ONE JSON object and nothing else:`,
@@ -246,9 +242,9 @@ export function systemPrompt(tools: AnyTool[], now: Date): string {
     `  such as looking up a number before texting it.`,
     `- An empty or disappointing result ("No events in that range.") is still`,
     `  the answer. Report it. Do not look again.`,
-    `- Never work out a date yourself: copy it from the date list near the top`,
-    `  of this message, and never copy one out of these examples. Hours are on a`,
-    `  24-hour clock, so 1pm is 13 and 6pm is 18.`,
+    `- Never work out a date yourself: copy it from the date list in the note`,
+    `  below the conversation, and never copy one out of these examples. Hours`,
+    `  are on a 24-hour clock, so 1pm is 13 and 6pm is 18.`,
     `- If no tool does what was asked — there is no way to delete or edit`,
     `  anything — say so plainly. Never substitute a tool that does something`,
     `  else, and never one that does the opposite of what was asked.`,
@@ -288,8 +284,8 @@ export function systemPrompt(tools: AnyTool[], now: Date): string {
  * measured BEFORE the date table moved in — re-measure with promptSize.ts
  * rather than trusting a number in a comment, this one included.
  */
-export function agentPrefix(tools: AnyTool[], now: Date = new Date()): AgentMessage[] {
-  return [{ role: 'system', content: systemPrompt(tools, now) }];
+export function agentPrefix(tools: AnyTool[]): AgentMessage[] {
+  return [{ role: 'system', content: systemPrompt(tools) }];
 }
 
 /**
@@ -331,14 +327,35 @@ export function turnReference(now: Date, request = ''): AgentMessage {
   const clock = now.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
   const weekday = now.toLocaleDateString(undefined, { weekday: 'long' });
   const asked = request.trim().slice(0, 300);
-  // Byte-identical to the unconditional rendering when the block is kept: the
-  // prefix is matched by token equality, so a stray space here would be a
-  // silent cache miss on every turn that DOES name a time.
+  // The date table lives HERE, not in the system prompt, and that placement is
+  // load-bearing in both directions.
+  //
+  // For accuracy: a real-model A/B (npm run eval:real, via legacyPlanNote) put
+  // the table in the system prefix and the planner stopped resolving named
+  // weekdays — "What have I got on Monday?" asked on a Wednesday came back as
+  // the whole week instead of the one day. Moving it back next to the decision
+  // point restored it, and lost nothing: the passing set is a strict superset
+  // of both earlier layouts on every metric. Dates are copied reliably only
+  // when the table is the last thing read before the decision.
+  //
+  // For latency: it also makes systemPrompt() date-INDEPENDENT, so the prewarmed
+  // prefix and the on-disk KV snapshot stay valid across midnight instead of
+  // being invalidated nightly. Before this, a rollover mid-session shared 116
+  // characters of 7059 with the previous prefix — the date sat on line 2, so
+  // the divergence took the whole cached history with it: ~2754 tokens
+  // re-prefilled, ~42s on the test AVD, once a day.
+  //
+  // Each seam below carries its OWN leading space, and that is the convention
+  // to keep: the prefix is matched by token equality, so a stray or missing
+  // space is a silent cache miss on every turn — no error, just a prompt that
+  // stops matching and a turn as slow as it was before any of this work.
+  const dates = ` Dates (copy from this list, never work one out): ${dateAnchors(now)}`;
   const relative = mentionsTime(request) ? ` ${relativeTimes(now)}` : '';
   return {
     role: 'user',
     content:
       `[Reference, not a request — it is ${clock} on ${weekday}, ${localDate(now)}.` +
+      `${dates}` +
       `${relative}]` +
       (asked ? `\nWhat I actually asked you: "${asked}"` : ''),
   };

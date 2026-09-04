@@ -35,7 +35,7 @@ const realTools: AnyTool[] = Object.entries(TOOL_DEFS).map(([name, d]) => ({
 function dateTableLine(now: Date): string {
   const request = 'what am I doing on Friday';
   const candidates = [
-    systemPrompt(realTools, now),
+    systemPrompt(realTools),
     turnReference(now, request).content,
     legacyPlanNote(now, [], request).content,
   ];

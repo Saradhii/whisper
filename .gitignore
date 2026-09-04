@@ -31,3 +31,6 @@ assets/*-source.*
 # env
 .env
 .env.*
+
+# Throwaway git worktrees for parallel agent work — never committed.
+.claude/worktrees/

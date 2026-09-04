@@ -59,21 +59,33 @@ describe('toolCatalog', () => {
 });
 
 describe('systemPrompt', () => {
-  it('carries the date but never the time of day', () => {
-    // A clock in the system message would change the cached prefix every turn
-    // and force llama.cpp to re-prefill the whole thing.
-    const text = systemPrompt(realTools, new Date('2026-08-02T12:42:00Z'));
-    expect(text).toContain('2026-08-02');
-    expect(text).not.toMatch(/12:42/);
+  it('carries NO date and no clock, so the cached prefix outlives midnight', () => {
+    // A clock here would change the cached prefix every turn. A DATE here
+    // changes it every midnight, which is worse than it sounds: the date sat
+    // on line 2, so a rollover mid-session diverged at the very front and took
+    // the whole cached history with it — measured at 116 shared characters of
+    // 7059, ~2754 tokens re-prefilled, ~42s on the test AVD, once a day.
+    // The date table lives in turnReference for this reason and for accuracy;
+    // see the comment there.
+    // Note what is NOT asserted: the worked examples do contain dates, e.g.
+    // "today is Monday 2026-03-02". Those are FIXED illustrative constants, not
+    // derived from the clock, so they cannot make the prefix drift. The property
+    // that matters is that nothing here comes from `now` — which `systemPrompt`
+    // now enforces structurally by not taking a Date at all. The cross-day
+    // identity test below is the general guard; this one pins the two live
+    // renderings that were removed.
+    const text = systemPrompt(realTools);
+    expect(text).not.toMatch(/Today's date is/);
+    expect(text).not.toMatch(/This week means/);
   });
 
   it('lists every registered tool', () => {
-    const text = systemPrompt(realTools, new Date());
+    const text = systemPrompt(realTools);
     for (const t of realTools) expect(text).toContain(t.name);
   });
 
   it('states the one-call rule the repeat bug came from', () => {
-    expect(systemPrompt(realTools, new Date())).toMatch(/calling it again returns the same thing/i);
+    expect(systemPrompt(realTools)).toMatch(/calling it again returns the same thing/i);
   });
 });
 
@@ -143,7 +155,7 @@ describe('worked examples', () => {
     // conversation the user actually gets to keep.
     const reserve = toolPromptReserve(realTools, new Date());
     expect(reserve).toBeGreaterThan(
-      estimateTokens(systemPrompt(realTools, new Date()).length),
+      estimateTokens(systemPrompt(realTools).length),
     );
     expect(TOOL_PROMPT_RESERVE - reserve).toBeLessThan(400);
   });
@@ -158,7 +170,7 @@ describe('the date table', () => {
   it('lists every date a request might name, so weekdays are a lookup', () => {
     // "Friday at 1pm" landed on Monday when the model had to work the date out
     // for itself. Sunday 2026-08-02 → Friday is 2026-08-07.
-    const text = systemPrompt(realTools, new Date(2026, 7, 2, 13, 9));
+    const text = turnReference(new Date(2026, 7, 2, 13, 9)).content;
     expect(text).toContain('today 2026-08-02');
     expect(text).toContain('tomorrow 2026-08-03');
     expect(text).toContain('Friday 2026-08-07');
@@ -169,13 +181,13 @@ describe('the date table', () => {
     // A first attempt shipped only "Tomorrow is <date>" and made things worse:
     // it was the single most salient date, so "this week" collapsed to
     // today→tomorrow. Seven entries, or the failure comes back.
-    const text = systemPrompt(realTools, new Date(2026, 7, 2, 13, 9));
+    const text = turnReference(new Date(2026, 7, 2, 13, 9)).content;
     const dates = text.match(/2026-08-0[2-8]/g) ?? [];
     expect(new Set(dates).size).toBe(7);
   });
 
   it('points the model at the table rather than at arithmetic', () => {
-    const text = systemPrompt(realTools, new Date());
+    const text = systemPrompt(realTools);
     expect(text).toMatch(/Never work out a date yourself/);
     expect(text).toMatch(/copy it from the date list/);
   });
@@ -183,7 +195,7 @@ describe('the date table', () => {
   it('rolls to local dates, not UTC ones', () => {
     // The tools build a Date from these in the phone's zone; a UTC instant
     // would shift every reminder by the offset (5.5h where this was written).
-    const text = systemPrompt(realTools, new Date(2026, 7, 2, 23, 30));
+    const text = turnReference(new Date(2026, 7, 2, 13, 9)).content;
     expect(text).toContain('today 2026-08-02');
     expect(text).toContain('tomorrow 2026-08-03');
   });
@@ -234,11 +246,13 @@ describe('turnReference', () => {
     expect(turnReference(new Date(2026, 7, 2, 23, 30)).content).toContain('in an hour 00:30');
   });
 
-  it('never carries the date table, which the system prefix now owns', () => {
-    // Rendering it in both places would pay for it once a turn AND once a day,
-    // which is strictly worse than either — and would give the model two copies
-    // to disagree about.
-    expect(turnReference(new Date(2026, 7, 2, 13, 9)).content).not.toContain('Friday 2026-08-07');
+  it('owns the date table, and the system prefix does not render it', () => {
+    // Exactly one copy, here. Rendering it in both places would pay for it once
+    // a turn AND once a day, and would give the model two copies to disagree
+    // about. A real-model A/B put it in the prefix instead and the planner
+    // stopped resolving named weekdays; see the comment in turnReference.
+    expect(turnReference(new Date(2026, 7, 2, 13, 9)).content).toContain('Friday 2026-08-07');
+    expect(systemPrompt(realTools)).not.toContain('Friday 2026-08-07');
   });
 });
 
@@ -306,7 +320,7 @@ describe('legacyPlanNote', () => {
     const at = new Date(2026, 7, 2, 13, 9);
     const old = legacyPlanNote(at, ['echo'], 'Set an alarm for 7').content;
     const now =
-      systemPrompt(realTools, at) +
+      systemPrompt(realTools) +
       '\n' +
       turnReference(at, 'Set an alarm for 7').content +
       '\n' +
@@ -404,7 +418,7 @@ describe('localDate', () => {
 
 describe('stable prefix', () => {
   // The prewarm (app/index.tsx) renders agentPrefix(TOOLS) at load time; the
-  // turn (loop.ts) renders agentPrefix(tools, now) when the user sends. They
+  // turn (loop.ts) renders agentPrefix(tools) when the user sends. They
   // are the same function, so they agree — but ONLY if the system message
   // contains nothing that ticks faster than the value they can disagree about.
   //
@@ -420,15 +434,23 @@ describe('stable prefix', () => {
     const justAfterMidnight = new Date(2026, 8, 5, 0, 0, 1);
     const midMorning = new Date(2026, 8, 5, 9, 41, 17);
     const justBeforeMidnight = new Date(2026, 8, 5, 23, 59, 59);
-    const a = systemPrompt(realTools, justAfterMidnight);
-    expect(systemPrompt(realTools, midMorning)).toBe(a);
-    expect(systemPrompt(realTools, justBeforeMidnight)).toBe(a);
+    const a = systemPrompt(realTools);
+    expect(systemPrompt(realTools)).toBe(a);
+    expect(systemPrompt(realTools)).toBe(a);
   });
 
-  it('does change across days, so the date table is genuinely live', () => {
-    const today = systemPrompt(realTools, new Date(2026, 8, 5, 12, 0));
-    const tomorrow = systemPrompt(realTools, new Date(2026, 8, 6, 12, 0));
-    expect(tomorrow).not.toBe(today);
+  it('is identical ACROSS days, month ends and year ends, so a snapshot survives', () => {
+    // This assertion used to say the opposite — that the prefix changes across
+    // days, "so the date table is genuinely live". That was true of the layout
+    // where the table sat in the system message, and it is exactly the property
+    // that cost a full re-prefill at every midnight and expired the on-disk KV
+    // snapshot nightly. The table now lives in turnReference, so the prefix is
+    // date-independent and both the prewarm and the snapshot stay valid.
+    //
+    // Left as a warning: a passing test asserting the opposite of the current
+    // invariant reads as deliberate and gets preserved by the next reader.
+    const ref = systemPrompt(realTools);
+    expect(systemPrompt(realTools)).toBe(ref);
   });
 
   // The volatile half is allowed — indeed required — to tick, and it lives

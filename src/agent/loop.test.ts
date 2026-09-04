@@ -98,9 +98,11 @@ describe('runAgent (grammar-constrained)', () => {
   });
 
   it('lays the turn out in three bands: stable prefix, turn reference, tail', async () => {
-    // The band each thing lives in is a latency decision. The system prefix is
-    // rewritten once a day and is prewarmed; the reference block once a turn;
-    // the trailing instruction on every planning step, which is why it is one
+    // The band each thing lives in is a latency decision, and one accuracy
+    // decision. The system prefix never changes at all — not even daily — so it
+    // is prewarmed once and its KV snapshot survives midnight; the reference
+    // block is rewritten once a turn and carries everything time-derived; the
+    // trailing instruction on every planning step, which is why it is one
     // sentence long. eval/appendOnly.test.ts holds the property end-to-end.
     const { engine, seen } = fakeEngine(['{"respond": true}', 'hi']);
     const at = new Date('2026-08-02T09:30:00Z');
@@ -110,10 +112,13 @@ describe('runAgent (grammar-constrained)', () => {
 
     const system = prompt[0]!;
     expect(system.role).toBe('system');
-    expect(system.content).toContain('2026-08-02');
-    // The date table is stable for the day, so it lives in the cached prefix.
-    expect(system.content).toContain('tomorrow 2026-08-03');
-    // A clock there would invalidate that prefix on every single turn.
+    // Nothing time-derived here at all. A clock would invalidate the prefix
+    // every turn; the DATE TABLE invalidated it every midnight, which cost a
+    // full re-prefill of the prefix AND the history behind it. It also cost
+    // accuracy: with the table this far from the decision point, a real model
+    // stopped resolving "What have I got on Monday?" to a single day.
+    expect(system.content).not.toContain('2026-08-02');
+    expect(system.content).not.toContain('tomorrow 2026-08-03');
     expect(system.content).not.toMatch(/Reference, not a request/);
 
     // The reference block sits AFTER the history — the history is the largest
@@ -123,6 +128,9 @@ describe('runAgent (grammar-constrained)', () => {
     expect(reference.content).toMatch(/Reference, not a request/);
     expect(reference.content).toContain('Sunday');
     expect(reference.content).toContain('"what is the score"');
+    // The date table lives here, next to the decision, and nowhere else.
+    expect(reference.content).toContain('2026-08-02');
+    expect(reference.content).toContain('tomorrow 2026-08-03');
 
     // The tail is the only thing rewritten between planning steps.
     const tail = prompt[prompt.length - 1]!;
@@ -141,7 +149,7 @@ describe('runAgent (grammar-constrained)', () => {
     const at = new Date('2026-08-02T09:30:00Z');
     const { engine, seen } = fakeEngine(['{"respond": true}', 'hi']);
     await runAgent(engine, [echoTool], [{ role: 'user', content: 'what is the score' }], cb([]), at);
-    expect(seen[0]!.messages[0]).toEqual(agentPrefix([echoTool], at)[0]);
+    expect(seen[0]!.messages[0]).toEqual(agentPrefix([echoTool])[0]);
   });
 
   it('leaves the reference block out of a turn that never plans', async () => {

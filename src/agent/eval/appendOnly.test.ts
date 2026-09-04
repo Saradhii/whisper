@@ -267,7 +267,7 @@ describe('the turn is append-only', () => {
     const at = NOW;
     lines.push('', '  composition of one turn (the real 18-tool catalog)');
     for (const [label, text] of [
-      ['systemPrompt (once a day)', systemPrompt(REAL_TOOLS, at)],
+      ['systemPrompt (once a day)', systemPrompt(REAL_TOOLS)],
       ['turnReference (once a turn)', turnReference(at, HISTORY[2]!.content).content],
       ['planInstruction (per step, first)', planInstruction([]).content],
       ['planInstruction (per step, spent)', planInstruction(['look_a']).content],
@@ -350,6 +350,22 @@ describe('the turn is append-only', () => {
     // block sits after the history, so turn 2 re-evaluates it. Putting it
     // BEFORE the history would save that and invalidate the whole conversation
     // instead — up to 1280 tokens (historyBudget.ts) against ~110.
+    //
+    // The budget below was raised 700 -> 850 DELIBERATELY, and this is the
+    // record of why rather than a floor quietly moved to green a build. The
+    // seven-day date table moved out of the system prefix and into the
+    // reference block, which is re-evaluated once a turn: measured at 791
+    // chars here, about +190 over the previous layout. It was paid for on
+    // purpose. A real-model A/B (npm run eval:real) showed the table in the
+    // prefix cost date accuracy — the planner stopped resolving "What have I
+    // got on Monday?" to a single day — and moving it back was a strict
+    // improvement on every metric, losing nothing. It also made the prefix
+    // date-independent, so the prewarm and the on-disk KV snapshot now survive
+    // midnight instead of being invalidated nightly at a cost of ~2754 tokens.
+    //
+    // ~190 chars a turn for correct dates and no midnight cliff. If this number
+    // creeps again, that is a NEW regression and needs its own justification —
+    // do not raise it because it was raised once.
     const { engine, seen } = capturingEngine([
       ...turnOf(1),
       ...turnOf(1), // the second turn replays the same script
@@ -373,6 +389,6 @@ describe('the turn is append-only', () => {
     // decision and result all stay cached. Only the new exchange plus this
     // turn's reference block and instruction are rebuilt.
     expect(first.sharedMessages).toBeGreaterThanOrEqual(HISTORY.length + 1);
-    expect(first.reEvaluatedChars).toBeLessThan(700);
+    expect(first.reEvaluatedChars).toBeLessThan(850);
   });
 });

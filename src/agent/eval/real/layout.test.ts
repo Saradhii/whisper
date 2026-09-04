@@ -26,7 +26,7 @@ const tools = () => buildFakeTools(emptyWorld(), NOW);
 /** A planning prompt in the shipped layout, built the way `runAgent()` builds it. */
 function currentPlanPrompt(called: string[] = [], history: AgentMessage[] = []): AgentMessage[] {
   return [
-    ...agentPrefix(tools(), NOW),
+    ...agentPrefix(tools()),
     { role: 'user', content: REQUEST },
     turnReference(NOW, REQUEST),
     ...history,
@@ -36,14 +36,14 @@ function currentPlanPrompt(called: string[] = [], history: AgentMessage[] = []):
 
 describe('ablate', () => {
   it('finds the date table where systemPrompt puts it', () => {
-    const system = agentPrefix(tools(), NOW)[0]!.content;
+    const system = agentPrefix(tools())[0]!.content;
     expect(system).toContain('Dates (copy from this list, never work one out):');
     expect(system).toContain('today 2026-08-12');
     expect(system).toContain('This week means 2026-08-12 to 2026-08-18');
   });
 
   it('"dates" removes the table from the system prefix and nothing else', () => {
-    const system = agentPrefix(tools(), NOW)[0]!.content;
+    const system = agentPrefix(tools())[0]!.content;
     const cut = ablate(system, 'dates')!;
     expect(cut).not.toContain('tomorrow 2026-08-13');
     expect(cut).not.toContain('This week means');
@@ -76,7 +76,7 @@ describe('ablate', () => {
   });
 
   it('"none" is a no-op everywhere', () => {
-    expect(ablate(agentPrefix(tools(), NOW)[0]!.content, 'none')).toBeNull();
+    expect(ablate(agentPrefix(tools())[0]!.content, 'none')).toBeNull();
     expect(ablate(turnReference(NOW, REQUEST).content, 'none')).toBeNull();
   });
 
@@ -141,7 +141,7 @@ describe('applyLayout', () => {
     // there is no note to rebuild — but the system prefix must still match the
     // legacy one, or the two arms would differ by more than the layout.
     const answer: AgentMessage[] = [
-      ...agentPrefix(tools(), NOW),
+      ...agentPrefix(tools()),
       { role: 'user', content: REQUEST },
       { role: 'user', content: 'Now reply to me directly…' },
     ];
@@ -173,7 +173,7 @@ describe('toTableInNote (configuration C)', () => {
     const dayLater = new Date('2026-08-13T09:15');
     const b = applyLayout(
       [
-        ...agentPrefix(tools(), dayLater),
+        ...agentPrefix(tools()),
         { role: 'user', content: REQUEST },
         turnReference(dayLater, REQUEST),
         planInstruction([]),
@@ -215,7 +215,7 @@ describe('toTableInNote (configuration C)', () => {
     // bracket rather than after it.
     const asked = 'Show me my photos from the beach';
     const plain: AgentMessage[] = [
-      ...agentPrefix(tools(), NOW),
+      ...agentPrefix(tools()),
       { role: 'user', content: asked },
       turnReference(NOW, asked),
       planInstruction([]),

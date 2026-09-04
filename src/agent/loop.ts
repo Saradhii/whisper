@@ -251,7 +251,7 @@ export async function runAgent(
   // is the one turn shape whose whole point is that it costs a single
   // generation. A turn that never plans has no decision for a clock to inform.
   const messages: AgentMessage[] = [
-    ...agentPrefix(tools, now),
+    ...agentPrefix(tools),
     ...history,
     ...(plans ? [turnReference(now, lastRequest)] : []),
   ];

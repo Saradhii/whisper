@@ -122,8 +122,15 @@ describe('turnReference, conditional', () => {
     // A stray space either side of the block would be a silent cache miss on
     // every turn that names a time — the prefix is matched by token equality,
     // and nothing would report it.
+    // The full literal is spelled out rather than composed, so that a lost or
+    // doubled space at EITHER seam — before the date table, or between it and
+    // the fenced block — fails here instead of silently costing a re-prefill.
     expect(turnReference(at, 'wake me in an hour').content).toBe(
       '[Reference, not a request — it is 01:09 pm on Sunday, 2026-08-02. ' +
+        'Dates (copy from this list, never work one out): today 2026-08-02, ' +
+        'tomorrow 2026-08-03, Tuesday 2026-08-04, Wednesday 2026-08-05, ' +
+        'Thursday 2026-08-06, Friday 2026-08-07, Saturday 2026-08-08. ' +
+        'This week means 2026-08-02 to 2026-08-08. ' +
         'Use ONLY if I say "in N minutes/hours": in 30 minutes it is 13:39, ' +
         'in an hour 14:09, in three hours 16:09. If I name a time instead ' +
         '("at 10pm", "at 7:30"), use exactly that, with minute 0 unless I said a minute.]\n' +
@@ -138,7 +145,12 @@ describe('turnReference, conditional', () => {
     // "current time"). Only the fenced arithmetic goes.
     const note = turnReference(at, 'What is the capital of France?').content;
     expect(note).toBe(
-      '[Reference, not a request — it is 01:09 pm on Sunday, 2026-08-02.]\n' +
+      '[Reference, not a request — it is 01:09 pm on Sunday, 2026-08-02. ' +
+        'Dates (copy from this list, never work one out): today 2026-08-02, ' +
+        'tomorrow 2026-08-03, Tuesday 2026-08-04, Wednesday 2026-08-05, ' +
+        'Thursday 2026-08-06, Friday 2026-08-07, Saturday 2026-08-08. ' +
+        'This week means 2026-08-02 to 2026-08-08.' +
+        ']\n' +
         'What I actually asked you: "What is the capital of France?"',
     );
     expect(note).not.toMatch(/in an hour/);
