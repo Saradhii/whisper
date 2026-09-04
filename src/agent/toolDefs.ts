@@ -17,12 +17,20 @@ import { z } from 'zod';
 export const isoDay = (field: string) =>
   z
     .string()
-    .describe(`${field} as YYYY-MM-DD`)
+    // The prefix used to repeat what the argument's own key already says —
+    // `date: (the day of the event as YYYY-MM-DD)`, `start: (first day as
+    // YYYY-MM-DD)`. `YYYY-MM-DD` is the load-bearing half and is pinned by
+    // prompt.test.ts; the label is kept for the zod error message, which the
+    // model never sees but a developer does.
+    .describe('YYYY-MM-DD')
     .transform((s, ctx) => {
       const m = /^\s*(\d{4})-(\d{2})-(\d{2})/.exec(s);
       const d = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(NaN);
       if (isNaN(+d)) {
-        ctx.addIssue({ code: 'custom', message: `"${s}" is not a date in YYYY-MM-DD form` });
+        ctx.addIssue({
+          code: 'custom',
+          message: `${field}: "${s}" is not a date in YYYY-MM-DD form`,
+        });
         return z.NEVER;
       }
       return d;
