@@ -1,5 +1,6 @@
 // Settings: the small set of controls a daily user needs — reply style and
 // length, optional persona instructions, and a link to voice settings.
+import Constants from 'expo-constants';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useEffect, useSyncExternalStore } from 'react';
@@ -201,9 +202,23 @@ export default function SettingsScreen() {
           only network use is downloading models and, if the assistant uses them, web search
           and web page tools.
         </Text>
+        <Text style={styles.version}>{versionLine()}</Text>
       </ScrollView>
     </View>
   );
+}
+
+/**
+ * "Whisper 1.1.0 (9)" — the app.json version plus the Android build number, so
+ * a screenshot of this screen is enough to reproduce a bug report against the
+ * exact build. expoConfig is null in Expo Go, where the line simply doesn't
+ * render.
+ */
+function versionLine(): string {
+  const version = Constants.expoConfig?.version;
+  if (!version) return '';
+  const code = Constants.expoConfig?.android?.versionCode;
+  return `Whisper ${version}${code ? ` (${code})` : ''}`;
 }
 
 const createStyles = (colors: Colors) =>
@@ -279,5 +294,10 @@ const createStyles = (colors: Colors) =>
       fontSize: 12,
       lineHeight: 17,
       marginTop: 20,
+    },
+    version: {
+      color: colors.textFaint,
+      fontSize: 11,
+      marginTop: 8,
     },
   });

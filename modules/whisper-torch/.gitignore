@@ -1,0 +1,4 @@
+# Gradle output (the module compiles as part of the Android build)
+android/.gradle/
+android/build/
+android/local.properties

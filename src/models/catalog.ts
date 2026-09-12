@@ -106,7 +106,7 @@ export const CATALOG: ModelSpec[] = [
     name: 'Gemma 4 E2B · Q4_K_M',
     // Still suggested — it is the only model here that can see an image — but
     // the description has to carry the trade. Its 2048-token window cannot hold
-    // the agent prompt (the 18-tool system message alone is ~1825 tokens, and
+    // the agent prompt (the tool system message alone is ~1825 tokens, and
     // TOOL_PROMPT_RESERVE is 3200), so it will never get
     // `tools: true`; a user who picks it must know before the 3.4 GB download
     // that this is the model that talks about actions instead of taking them.

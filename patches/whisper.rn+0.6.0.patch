@@ -1,0 +1,17 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index 4658456..47a9302 100644
+--- a/android/build.gradle
++++ b/android/build.gradle	
+@@ -80,7 +80,11 @@ android {
+         // Configure STL to be compatible with ReactAndroid JSI libraries
+         arguments "-DANDROID_STL=c++_shared",
+                   "-DREACT_NATIVE_MINOR_VERSION=${REACT_NATIVE_MINOR_VERSION}",
+-                  "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON"
++                  "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
++                  // whisper.cpp at -O3 needs ~2-3 GB per clang process; uncapped,
++                  // ninja runs one per core and LLVM dies with "out of memory"
++                  // on 8 GB machines (Windows build machine, 12 threads).
++                  "-DCMAKE_JOB_POOLS=compile=2;link=2"
+       }
+     }
+     ndk {

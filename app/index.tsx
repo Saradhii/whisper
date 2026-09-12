@@ -167,6 +167,10 @@ export default function Chat() {
   // Cooperative cancellation for the agent loop (engine.stop only interrupts
   // the CURRENT completion; this flag stops the loop from continuing after it).
   const abortRef = useRef({ aborted: false });
+  // Generation counter. Every callback of turn N (tokens, tool events,
+  // confirmations, the completion path) is dropped once N is no longer current,
+  // which is what makes switching conversations mid-turn safe — see abortTurn.
+  const turnRef = useRef(0);
   // Tokenizer counts per settled message, so history budgeting doesn't re-count
   // the whole conversation every send.
   const tokenCounts = useRef(new Map<string, number>());
@@ -429,6 +433,12 @@ export default function Chat() {
   // One model turn: `turnMessages` ends with the user message to answer.
   const runModel = async (turnMessages: UiMessage[], attachedImage?: string) => {
     if (!active) return;
+    const turn = ++turnRef.current;
+    // True once this turn has been abandoned (abortTurn: new chat, chat
+    // switch, or model change raced a generation). Its callbacks must not
+    // write into the transcript that replaced it, and its completion must not
+    // clear `busy` out from under the turn that replaced it.
+    const stale = () => turn !== turnRef.current;
     const engine = engineFor(active);
     setBusy(true);
     setThinking({ kind: 'thinking' }); // orb up immediately, during prefill
@@ -456,14 +466,21 @@ export default function Chat() {
       if (useTools) {
         // Agent path: the model can call phone tools in a loop.
         await runAgent(engine, TOOLS, history, {
-          onEvent: handleAgentEvent,
-          confirm: confirmAction,
+          onEvent: (e) => {
+            if (!stale()) handleAgentEvent(e);
+          },
+          confirm: async (summary, name) => {
+            if (stale()) return false; // abandoned mid-ask counts as a denial
+            return confirmAction(summary, name);
+          },
           signal: abortRef.current,
         });
       } else {
         await engine.generate(
           [{ role: 'system', content: chatSystemPrompt(new Date(), prefs.personaExtra) }, ...history],
-          appendToken,
+          (token) => {
+            if (!stale()) appendToken(token);
+          },
           {
             imageUri: attachedImage,
             temperature: prefs.temperature,
@@ -471,6 +488,7 @@ export default function Chat() {
           },
         );
       }
+      if (stale()) return;
       finishStreaming(); // land the last buffered tokens and parse markdown
       // If the model produced nothing visible (e.g. stopped early), say so —
       // unless the user stopped it themselves.
@@ -486,12 +504,18 @@ export default function Chat() {
       }
 
     } catch (e) {
+      if (stale()) return;
       const msg = e instanceof Error ? e.message : String(e);
       setMessages((prev) => [...prev, { id: uid(), role: 'assistant', content: msg, error: true }]);
     } finally {
-      finishStreaming();
-      setBusy(false);
-      setThinking(null);
+      // Only the turn that still owns the screen may clear `busy`: a stale
+      // turn's completion lands after its replacement started streaming, and
+      // clearing it here would let a second send through mid-generation.
+      if (!stale()) {
+        finishStreaming();
+        setBusy(false);
+        setThinking(null);
+      }
     }
   };
 
@@ -505,6 +529,30 @@ export default function Chat() {
     }
     setMessages(cancelConfirms);
     if (active) void engineFor(active).stop(); // interrupt the current completion
+  };
+
+  // Abandon the in-flight turn, if any, WITHOUT touching the transcript state
+  // beyond what stop() already does. Called by the drawer before it swaps the
+  // conversation (new chat / open chat / delete current): without this, the
+  // turn kept streaming into whatever conversation was now on screen — an
+  // empty new chat showing nothing but the loader, then the old turn's answer
+  // appended into it and saved into its file. Dropping `turnRef`'s generation
+  // is what silences the callbacks; stop() is what actually ends the engine
+  // work and drains a confirmation card the user can no longer answer.
+  const abortTurn = () => {
+    turnRef.current += 1;
+    if (flushTimer.current) {
+      clearTimeout(flushTimer.current);
+      flushTimer.current = null;
+    }
+    pendingRef.current = '';
+    stop();
+    // The abandoned turn's finally block skips busy/thinking cleanup on
+    // purpose (it must not clear them out from under a replacement turn), so
+    // the abort owns that here — otherwise the composer would stay in stop
+    // mode over an empty chat until something else touched the state.
+    setThinking(null);
+    setBusy(false);
   };
 
   // Only follow the stream when the user is already at the bottom — otherwise
@@ -601,7 +649,7 @@ export default function Chat() {
         ) : null}
       </View>
 
-      <DrawerMenu open={drawerOpen} onClose={closeDrawer} />
+      <DrawerMenu open={drawerOpen} onClose={closeDrawer} onBeforeSwitch={abortTurn} />
 
       {!active ? (
         <View style={styles.center}>
@@ -810,6 +858,7 @@ const TOOL_ICONS: Record<string, IoniconName> = {
   read_clipboard: 'clipboard-outline',
   write_clipboard: 'clipboard-outline',
   set_brightness: 'sunny-outline',
+  toggle_torch: 'flashlight-outline',
   get_location: 'location-outline',
   search_phone_media: 'images-outline',
 };

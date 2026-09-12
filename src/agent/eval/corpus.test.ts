@@ -35,10 +35,14 @@ const REPLAYABLE = ALL_SCENARIOS.filter((s) => s.script.length > 0);
  * cheapest available proxy for the Phase 2 latency budget.
  */
 const FLOOR = {
-  completed: 79,
-  toolCorrect: 79,
-  argsCorrect: 79,
-  answerCorrect: 79,
+  // 79 → 81 with the two 2026-09-12 device scenarios (dev-torch-on,
+  // dev-brightness-full-percent), each a replay of a bug a real phone shipped:
+  // torch substituted by set_brightness, and a level of 100 sent for "100
+  // percent". Raise to the next observed run; never lower to green a build.
+  completed: 81,
+  toolCorrect: 81,
+  argsCorrect: 81,
+  answerCorrect: 81,
   meanStepsCeiling: 2.2,
 } as const;
 

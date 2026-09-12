@@ -1,0 +1,27 @@
+apply plugin: 'com.android.library'
+
+group = 'expo.modules.whispertorch'
+version = '1.0.0'
+
+def expoModulesCorePlugin = new File(project(":expo-modules-core").projectDir.absolutePath, "ExpoModulesCorePlugin.gradle")
+apply from: expoModulesCorePlugin
+applyKotlinExpoModulesCorePlugin()
+useCoreDependencies()
+
+android {
+  namespace "expo.modules.whispertorch"
+
+  defaultConfig {
+    minSdkVersion safeExtGet("minSdkVersion", 24)
+    compileSdkVersion safeExtGet("compileSdkVersion", 36)
+    targetSdkVersion safeExtGet("targetSdkVersion", 36)
+  }
+
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  implementation project(":expo-modules-core")
+}

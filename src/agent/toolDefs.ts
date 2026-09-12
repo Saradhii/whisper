@@ -214,13 +214,22 @@ export const TOOL_DEFS = {
     // one buying an extra plan/execute/prefill cycle for an answer it then gave
     // from its own knowledge anyway. The condition belongs in the description,
     // where it sits next to the name at the moment of choosing.
+    //
+    // The last sentence is the link-dumping fix, OBSERVED on a phone: asked for
+    // tonight's match result, the planner answered with the result URLs dressed
+    // up as answers — twice, even after the correction "I want to see the
+    // results not links". A snippets page is not a result; the model needs to
+    // be told, at the moment it holds the links, that fetching one is part of
+    // the same turn's job. ("facts you do NOT already know" must stay verbatim:
+    // a guarded eval scenario quotes it as its guard.)
     description:
-      'Search the web for facts you do NOT already know, or that change (news, prices, opening hours, live scores). Returns top results with titles, URLs, and snippets.',
+      'Search the web for facts you do NOT already know, or that change (news, prices, opening hours, live scores). Returns top results with titles, URLs, and snippets. If the results are links rather than the answer itself, fetch the most promising one with web_fetch and read the answer out of the page.',
     params: z.object({ query: z.string() }),
     label: (a) => `Search web: “${a.query}”`,
   }),
   web_fetch: def({
-    description: 'Fetch a web page and return its readable text (truncated).',
+    description:
+      'Fetch a web page and return its readable text (truncated). Use it to read a page a search only gave you the link to.',
     params: z.object({ url: httpUrl }),
     label: (a) => `Read ${a.url}`,
   }),
@@ -242,9 +251,30 @@ export const TOOL_DEFS = {
     mutates: true,
   }),
   set_brightness: def({
-    description: 'Set the screen brightness for this app (0.0 dark to 1.0 max).',
+    // "100" arrived twice on a real phone before the percent mapping was
+    // spelled out here: the schema rejected level 100, the model "fixed it to
+    // 1", and the transcript showed a failed chip followed by "Set brightness
+    // to 100%" — a recovery from its own error rendered as two actions. The
+    // mapping belongs at the decision point, like the enum values in
+    // search_phone_media.
+    description:
+      'Set the screen brightness for this app (0.0 dark to 1.0 max; percentages divide by 100, so "100%" is 1 and "30 percent" is 0.3).',
     params: z.object({ level: z.number().min(0).max(1) }),
     label: (a) => `Set brightness to ${Math.round(a.level * 100)}%`,
+    mutates: true,
+  }),
+  toggle_torch: def({
+    // OBSERVED: "turn on the torch light" had nothing to call — the closest
+    // tool was set_brightness, which the model substituted twice while the
+    // flashlight stayed off. The description also has to say what this is NOT:
+    // "light" alone reads as brightness, which is how the substitution
+    // happened in the first place.
+    description:
+      'Turn the camera flash LED (the torch / flashlight) on or off. This is the rear light, not the screen — brightness does not change.',
+    params: z.object({
+      on: z.boolean().describe('true to turn the torch on, false to turn it off'),
+    }),
+    label: (a) => (a.on ? 'Turn on the torch' : 'Turn off the torch'),
     mutates: true,
   }),
   get_location: def({

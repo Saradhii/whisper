@@ -45,7 +45,18 @@ function relativeTime(ts: number): string {
   return new Date(ts).toLocaleDateString();
 }
 
-export default function DrawerMenu({ open, onClose }: { open: boolean; onClose: () => void }) {
+export default function DrawerMenu({
+  open,
+  onClose,
+  onBeforeSwitch,
+}: {
+  open: boolean;
+  onClose: () => void;
+  /** Runs before the open conversation changes. The chat screen abandons its
+   *  in-flight turn here — without it the turn kept streaming into whatever
+   *  conversation was about to replace the one it belonged to. */
+  onBeforeSwitch: () => void;
+}) {
   const { colors } = useTheme();
   const styles = useThemedStyles(createStyles);
   const insets = useSafeAreaInsets();
@@ -155,22 +166,35 @@ export default function DrawerMenu({ open, onClose }: { open: boolean; onClose: 
   const openChat = useCallback(
     async (id: string) => {
       onClose();
+      if (id !== currentId) onBeforeSwitch();
       await ChatStore.open(id);
     },
-    [onClose],
+    [onClose, onBeforeSwitch, currentId],
   );
 
   const newChat = useCallback(async () => {
     onClose();
+    // Only a turn in progress makes this a switch; on an idle empty chat
+    // startNew() is a no-op and an abort would be harmless but pointless.
+    if (currentId || ChatStore.getCurrentMessages().length) onBeforeSwitch();
     await ChatStore.startNew();
-  }, [onClose]);
+  }, [onClose, onBeforeSwitch, currentId]);
 
   const confirmDelete = useCallback((id: string, title: string) => {
     Alert.alert('Delete chat?', `“${title}” will be removed from this device.`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => void ChatStore.remove(id) },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => {
+          // Deleting the conversation a turn is streaming into is a switch:
+          // the same leak, with the transcript about to be deleted outright.
+          if (id === ChatStore.getCurrentId()) onBeforeSwitch();
+          void ChatStore.remove(id);
+        },
+      },
     ]);
-  }, []);
+  }, [onBeforeSwitch]);
 
   if (!mounted) return null;
 

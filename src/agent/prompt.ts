@@ -152,8 +152,18 @@ export function toolPromptReserve(tools: AnyTool[], now: Date = new Date()): num
  * from 1280 tokens to 951. That is the honest price of the current prefix, and
  * it is the strongest argument for raising nCtx rather than for trimming more
  * teaching out of the prompt.
+ *
+ * RAISED from 3200 to 3286 for the 2026-09-12 usability pass, with the three
+ * additions that spent the 86 tokens each traceable to a bug a user hit:
+ * toggle_torch in the catalog (torch requests were substituted with
+ * set_brightness — twice, on a real phone), the search_phone_media enum
+ * values now disclosed (a rejected "photos" cost a plan/execute cycle), and
+ * the brightness percent mapping plus the web_search fetch-what-you-found
+ * teaching (link-dumping answers, twice in one conversation). At the tools
+ * models' nCtx 8192 this still leaves ~4900 tokens of history — about four
+ * times the 1280 the 4096-era arithmetic was written against.
  */
-export const TOOL_PROMPT_RESERVE = 3200;
+export const TOOL_PROMPT_RESERVE = 3286;
 
 /**
  * Each tool as name + description + argument list (`?` marks optional).
@@ -169,14 +179,29 @@ export function toolCatalog(tools: AnyTool[]): string {
   return tools
     .map((t) => {
       const schema = t.jsonSchema as {
-        properties?: Record<string, { type?: string; description?: string }>;
+        properties?: Record<string, {
+          type?: string;
+          description?: string;
+          /** Present when the zod schema was z.enum([...]). Dropped here once —
+           *  search_phone_media.media_type reached the model as bare `string`,
+           *  it emitted a value outside the set, zod rejected it, and the loop
+           *  burned a plan/execute cycle rediscovering what this line now
+           *  states up front. Same class as the dropped `.describe()`s below. */
+          enum?: unknown[];
+        }>;
         required?: string[];
       };
       const required = new Set(schema.required ?? []);
       const args = Object.entries(schema.properties ?? {})
         .map(([k, v]) => {
           const head = `${k}${required.has(k) ? '' : '?'}: ${v.type ?? 'any'}`;
-          return v.description ? `${head} (${v.description})` : head;
+          // The model can't see the zod schema, only this line — so the allowed
+          // values go here, next to the name, where the choice is made.
+          const choices = Array.isArray(v.enum) && v.enum.length > 0
+            ? [`one of ${v.enum.map((e) => `"${String(e)}"`).join(', ')}`]
+            : [];
+          if (v.description) choices.push(v.description);
+          return choices.length ? `${head} (${choices.join('; ')})` : head;
         })
         .join(', ');
       // `args:` not `arguments:`, and omitted entirely when a tool takes none.

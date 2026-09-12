@@ -160,6 +160,56 @@ export const DEVICE_SCENARIOS = scenarios([
     script: oneCall('set_brightness', { level: 1 }, 'Brightness is all the way up.'),
   },
 
+  // OBSERVED on a real phone (2026-09-12): asked for 100%, the planner sent
+  // level 100, the schema rejected it, and it retried with 1 — the transcript
+  // showing a failed chip, then "Set brightness to 100%", for what was a
+  // recovery from its own error. The tool description now spells out the
+  // divide-by-100 mapping; this pins the result of reading it.
+  {
+    id: 'dev-brightness-full-percent',
+    title: '"100 percent" is level 1, not 100',
+    tags: ['device', 'mutating'],
+    now: '2026-08-12T13:00',
+    world: { brightness: 0.5 },
+    turns: [
+      {
+        user: 'Turn the brightness to 100 percent',
+        expect: {
+          calls: [{ name: 'set_brightness', args: { level: 1 } }],
+          answer: { mustContain: ['100'] },
+        },
+      },
+    ],
+    expectWorld: { brightness: 1 },
+    script: oneCall('set_brightness', { level: 1 }, 'Brightness is set to 100%.'),
+  },
+
+  // OBSERVED on a real phone (2026-09-12): "turn on the torch light" had no
+  // torch tool to call, so the planner substituted set_brightness — twice,
+  // the second time "fixing" the rejected level 100 down to 1 — while the
+  // flashlight itself stayed off. The tool exists now; the scenario pins it
+  // being the pick for the word "torch", with the screen brightness left
+  // alone (expectWorld asserts nothing about brightness, and a set_brightness
+  // call here fails as an unexpected extra call).
+  {
+    id: 'dev-torch-on',
+    title: 'The torch is the flashlight, not the screen brightness',
+    tags: ['device', 'mutating'],
+    now: '2026-08-12T21:40',
+    world: { torch: false },
+    turns: [
+      {
+        user: 'Turn on the torch light',
+        expect: {
+          calls: [{ name: 'toggle_torch', args: { on: true } }],
+          answer: { mustContain: ['torch'] },
+        },
+      },
+    ],
+    expectWorld: { torch: true },
+    script: oneCall('toggle_torch', { on: true }, 'Torch on.'),
+  },
+
   // Test sheet row 15, which the emulator could never verify — no GPS fix on
   // the AVD, so the success path of this tool has literally never been scored.
   // Here it has a world and an answer.

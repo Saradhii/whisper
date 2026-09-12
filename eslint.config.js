@@ -2,9 +2,15 @@
 const { defineConfig } = require('eslint/config');
 const expoConfig = require('eslint-config-expo/flat');
 const tsPlugin = require('@typescript-eslint/eslint-plugin');
-const regexp = require('eslint-plugin-regexp');
 
-module.exports = defineConfig([
+// eslint-plugin-regexp is ESM-only since v3, and require() of an ES module
+// only works on Node >= 20.19. Loading it here through import() (and exporting
+// the config as the Promise ESLint 9 accepts) keeps `npm run lint` working on
+// older LTS lines — Node 20.11 shipped `require(esm)` too late to help.
+const regexpReady = import('eslint-plugin-regexp').then((m) => m.default ?? m);
+
+module.exports = regexpReady.then((regexp) =>
+  defineConfig([
   expoConfig,
   // Regex defects are their own bug class and they fail silently: a bad pattern
   // is still valid JavaScript, still returns a plausible-looking result, and
@@ -73,4 +79,4 @@ module.exports = defineConfig([
       'expo-env.d.ts',
     ],
   },
-]);
+  ]));

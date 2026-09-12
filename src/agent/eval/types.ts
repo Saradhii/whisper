@@ -65,6 +65,11 @@ export const WorldSchema = z.object({
     charging: false,
   }),
   brightness: z.number().min(0).max(1).default(0.5),
+  /** Rear-flash state written by toggle_torch. Kept apart from brightness on
+   *  purpose: the observed failure was the planner treating "torch" as a
+   *  brightness request, and one world field blurring into the other would
+   *  let that scenario pass while still conflating the two. */
+  torch: z.boolean().default(false),
   location: z
     .object({ latitude: z.number(), longitude: z.number(), address: z.string().optional() })
     .nullable()

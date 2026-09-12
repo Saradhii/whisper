@@ -45,14 +45,17 @@ describe('realTools is the registry, not a subset of it', () => {
 });
 
 describe('emptySchemaTools', () => {
-  it('is 954 characters lighter, and that gap is the argument descriptions', () => {
+  it('is 1059 characters lighter, and that gap is the argument descriptions', () => {
     // The number quoted in tools.ts, pinned so the comment cannot go stale
     // silently. It is the DURABLE figure: it measures the catalog's argument
     // descriptions and nothing else, so it survives prompt edits that move the
     // absolute sizes — it was 954 both before and after the pass that took the
-    // date table out of systemPrompt.
+    // date table out of systemPrompt. (Raised from 954 in the same pass that
+    // added the torch tool: its `on` argument description and the enum values
+    // now disclosed for search_phone_media.media_type are exactly the
+    // argument-level teaching this gap exists to count.)
     const gap = systemPrompt(realTools).length - systemPrompt(emptySchemaTools).length;
-    expect(gap).toBe(954);
+    expect(gap).toBe(1059);
     expect(gap).toBe(toolCatalog(realTools).length - toolCatalog(emptySchemaTools).length);
   });
 

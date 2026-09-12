@@ -48,6 +48,16 @@ describe('toolCatalog', () => {
     expect(line).toContain('host: string');
     expect(line).toContain('port?: number');
   });
+
+  it('shows enum values, which the schema carries and the catalog once dropped', () => {
+    // OBSERVED: search_phone_media.media_type rendered as bare `string`, the
+    // model emitted "photos" instead of "photo", zod rejected the call, and
+    // the loop spent a plan/execute cycle rediscovering what this line now
+    // states. Same class as the dropped .describe()s pinned above.
+    const line = toolCatalog(realTools);
+    expect(line).toContain('media_type?');
+    expect(line).toContain('one of "photo", "video", "audio"');
+  });
 });
 
 describe('systemPrompt', () => {

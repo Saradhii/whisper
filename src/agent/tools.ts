@@ -19,6 +19,7 @@ import { Linking, Platform } from 'react-native';
 import { cap, formatSearchResults, htmlToText, parseSearchResults } from './parse';
 import { atTime, mediaMatches, TOOL_DEFS } from './toolDefs';
 import { defineTool, type AnyTool } from './types';
+import { setTorch } from '@/src/torch/Torch';
 
 async function ensure(granted: boolean, what: string): Promise<void> {
   if (!granted) throw new Error(`Permission for ${what} was denied by the user.`);
@@ -302,6 +303,14 @@ export const TOOLS: AnyTool[] = [
     },
   }),
   defineTool({
+    name: 'toggle_torch',
+    ...TOOL_DEFS.toggle_torch,
+    execute: async (a) => {
+      await setTorch(a.on);
+      return a.on ? 'Torch on.' : 'Torch off.';
+    },
+  }),
+  defineTool({
     name: 'get_location',
     ...TOOL_DEFS.get_location,
     execute: async () => {
@@ -341,4 +350,10 @@ export const TOOLS: AnyTool[] = [
         .join('\n');
     },
   }),
-].filter((t) => Platform.OS === 'android' || t.name !== 'set_alarm');
+].filter(
+  // A tool the platform can't execute makes the model call it, fail, and
+  // apologize (see the comment above the registry).
+  (t) =>
+    Platform.OS === 'android' ||
+    (t.name !== 'set_alarm' && t.name !== 'toggle_torch'),
+);

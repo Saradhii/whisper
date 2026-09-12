@@ -208,3 +208,40 @@ the phases rather than blocking them.
   millisecond on one phone. Left alone; changing the format touches persisted
   keys for no user-visible gain.
 - Trace buffer has no export path (Phase 0 subsumes this).
+
+## 2026-09-12 device pass — user-reported, all on a real phone
+
+Found in one session of actually using v1.1.0 as shipped; each fix landed with
+its replay scenario, and the floors went 79 → 81 with them.
+
+- **New chat mid-turn leaked the turn into the new conversation** (reported:
+  the loader sitting alone in an empty chat). `DrawerMenu`'s new-chat / open /
+  delete-current paths swapped the transcript while `runAgent` kept streaming
+  into it; the turn-end save then persisted the old answer into the new chat's
+  file. Fixed with a generation counter in `app/index.tsx` (`turnRef`) whose
+  stale guard drops every late callback, plus `abortTurn()` wired through
+  `onBeforeSwitch`. Model switch and delete were already safe — `LlamaEngine`
+  serializes load/unload behind a running completion.
+- **"Turn on the torch light" set screen brightness instead** — there was no
+  torch tool, and the planner did nearest-neighbour matching. `toggle_torch`
+  added (Expo local module `modules/whisper-torch/`, `CameraManager
+  .setTorchMode`, no camera session), scenario `dev-torch-on` pins the pick.
+  The failed retry the same transcript showed — level 100 rejected, "fixed it
+  to 1" — is the second finding: `set_brightness`'s description now spells out
+  the divide-by-100 mapping, scenario `dev-brightness-full-percent`.
+- **web_search answered with links dressed as results**, twice, even after
+  "I want to see the results not links". The search itself was healthy (the
+  DuckDuckGo markup still matches the parser — verified live); what was missing
+  is the instruction to fetch a result page when the results are links, now in
+  the `web_search`/`web_fetch` descriptions. A live-model check is still owed
+  here — the replay corpus can only pin that the teaching exists.
+- **`toolCatalog()` dropped JSON-schema `enum`** — `search_phone_media
+  .media_type` reached the model as bare `string` (predicted in the prefill
+  campaign, confirmed by the same session's transcript patterns). Enum values
+  now render in the catalog line; `toolCatalog` test pins it.
+- **No app version visible anywhere** — Settings now renders
+  `Whisper <version> (<versionCode>)` under the privacy note, so a screenshot
+  names the exact build.
+- The reserve ratchet paid for it knowingly: TOOL_PROMPT_RESERVE 3200 → 3286,
+  each of the 86 tokens traceable to one of the fixes above, ~4900 tokens of
+  history left at nCtx 8192.

@@ -55,7 +55,7 @@ export type ScenarioRun = {
 
 export type RunOptions = {
   /** Swap the registry, e.g. to inject one misbehaving tool. Defaults to the
-   *  full 18 fakes bound to this run's world copy. */
+   *  full fake registry bound to this run's world copy. */
   buildTools?: (world: World, now: Date) => AnyTool[];
 };
 

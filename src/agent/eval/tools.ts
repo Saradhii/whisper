@@ -35,7 +35,8 @@ function localIso(d: Date): string {
 }
 
 /**
- * Build the 18 fake tools over `world`.
+ * Build the fake tools over `world` — one per entry in TOOL_DEFS, so a new
+ * tool is added here and to the fixture world rather than silently omitted.
  *
  * `now` is the scenario's frozen clock, and it is a parameter rather than
  * `Date.now()` because `schedule_reminder` refuses times in the past. With the
@@ -255,6 +256,15 @@ export function buildFakeTools(world: World, now: Date = new Date()): AnyTool[] 
         check('set_brightness');
         world.brightness = a.level;
         return `Brightness set to ${Math.round(a.level * 100)}%.`;
+      },
+    }),
+    defineTool({
+      name: 'toggle_torch',
+      ...TOOL_DEFS.toggle_torch,
+      execute: async (a) => {
+        check('toggle_torch');
+        world.torch = a.on;
+        return a.on ? 'Torch on.' : 'Torch off.';
       },
     }),
     defineTool({

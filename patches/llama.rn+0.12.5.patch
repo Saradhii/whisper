@@ -1,0 +1,17 @@
+diff --git a/android/build.gradle b/android/build.gradle
+index 10d8fd3..79aaeee 100644
+--- a/android/build.gradle
++++ b/android/build.gradle	
+@@ -147,7 +147,11 @@ android {
+       "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
+       "-DRNLLAMA_BUILD_FROM_SOURCE=${rnllamaBuildFromSourceFlag}",
+       "-DANDROID_STL=c++_shared",
+-      "-DREACT_NATIVE_MINOR_VERSION=${REACT_NATIVE_MINOR_VERSION}"
++      "-DREACT_NATIVE_MINOR_VERSION=${REACT_NATIVE_MINOR_VERSION}",
++      // whisper.cpp/llama.cpp at -O3 need ~2-3 GB per clang process; uncapped,
++      // ninja runs one per core and LLVM dies with "out of memory" on 8 GB
++      // machines (Windows build machine, 12 hardware threads).
++      "-DCMAKE_JOB_POOLS=compile=2;link=2"
+     ]
+ 
+     if (hexagonPresent) {
