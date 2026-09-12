@@ -89,6 +89,32 @@ describe('systemPrompt', () => {
   it('states the one-call rule the repeat bug came from', () => {
     expect(systemPrompt(realTools)).toMatch(/calling it again returns the same thing/i);
   });
+
+  it('answers an EMPTY search with the absence, not with the searching', () => {
+    // OBSERVED (v1.2.0 on a real phone): "Search the web for tonight's match
+    // result" was answered with "I searched the web for tonight's match
+    // results" — a sentence about the searching, nothing behind it. The
+    // emptySearch branch exists to make that reply unwritable.
+    const note = answerNote({
+      ran: 1,
+      acted: false,
+      failed: [],
+      denied: [],
+      emptySearch: true,
+    });
+    expect(note.content).toContain('No results found.');
+    expect(note.content).toMatch(/found NOTHING/i);
+    expect(note.content).toContain('Do NOT describe the searching');
+    // And the branch outranks the generic read branch, which would send the
+    // model looking for facts inside an empty result.
+    expect(note.content).not.toContain('from what the tool returned');
+  });
+
+  it('leaves the generic read branch alone when the search returned something', () => {
+    const note = answerNote({ ran: 1, acted: false, failed: [], denied: [] });
+    expect(note.content).toContain('from what the tool returned');
+    expect(note.content).not.toContain('found NOTHING');
+  });
 });
 
 describe('worked examples', () => {

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { cap, formatSearchResults, htmlToText, parseSearchResults } from './parse';
+import { cap, formatOtherResults, htmlToText, parseSearchResults, renderSearchTurn, TOP_RESULT_MARK } from './parse';
 
 // A real DuckDuckGo response, saved 2026-08-29 for the query "Tonight's match
 // result". Committed rather than fetched so the suite stays offline and
@@ -57,16 +57,42 @@ describe('parseSearchResults', () => {
   });
 });
 
-describe('formatSearchResults', () => {
-  it('caps every field, not just the number of rows', () => {
-    const line = formatSearchResults([
-      { title: 'T'.repeat(500), url: 'https://e.com/' + 'u'.repeat(500), snippet: 'S'.repeat(500) },
-    ]);
-    for (const l of line.split('\n')) expect(l.length).toBeLessThanOrEqual(245);
+describe('renderSearchTurn', () => {
+  it('leads with the fetched page — the payload survives result clamping', () => {
+    // The page is why the turn succeeds; loop.ts clamps long results from the
+    // end, so the page goes first and the links go after it.
+    const block = renderSearchTurn(
+      "tonight's match result",
+      { url: 'https://example.org/scores', text: 'RCB 210/4 beat MI 187/9.' },
+      '- Cricinfo — https://example.org/cricket',
+    );
+    expect(block.startsWith(`Searched the web for "tonight's match result". ${TOP_RESULT_MARK}`)).toBe(true);
+    expect(block.indexOf('187/9')).toBeLessThan(block.indexOf('Cricinfo'));
+    expect(block).toContain('--- https://example.org/scores ---');
   });
 
-  it('says so when there is nothing', () => {
-    expect(formatSearchResults([])).toBe('No results found.');
+  it('caps the fetched page text', () => {
+    const block = renderSearchTurn('q', { url: 'https://e.com/', text: 'x'.repeat(50_000) }, '');
+    expect(block.length).toBeLessThan(1400);
+  });
+
+  it('tells the model to fetch for itself when the top page could not be read', () => {
+    const block = renderSearchTurn('q', null, '- Cricinfo — https://example.org/cricket');
+    expect(block).toContain('web_fetch');
+    expect(block).toContain('https://example.org/cricket');
+  });
+});
+
+describe('formatOtherResults', () => {
+  it('skips the fetched URL and renders title — url lines', () => {
+    const lines = formatOtherResults(
+      [
+        { title: 'a', url: 'https://e.com/a', snippet: 's' },
+        { title: 'b', url: 'https://e.com/b', snippet: 's' },
+      ],
+      'https://e.com/a',
+    );
+    expect(lines).toBe('- b — https://e.com/b');
   });
 });
 

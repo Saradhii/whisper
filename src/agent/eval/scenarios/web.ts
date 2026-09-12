@@ -7,7 +7,8 @@
 // the device pass (F5) was a web tool: `web_fetch` after `open_url`,
 // `web_search` after a failed `get_location`, `web_search` for something the
 // model already knew.
-import { chain, oneCall, scenarios } from './define';
+import { TOP_RESULT_MARK } from '@/src/agent/parse';
+import { ANSWER, call, chain, oneCall, PLAN, RESPOND, scenarios } from './define';
 
 export const WEB_SCENARIOS = scenarios([
   // Something only the web can answer, so a tool is right here. The reply must
@@ -20,7 +21,13 @@ export const WEB_SCENARIOS = scenarios([
     now: '2026-08-12T09:15',
     world: {
       webResults: {
-        'nandi hills': '- Nandi Hills timings — the gate is open 6:00 AM to 10:00 PM daily.',
+        'nandi hills': '- Nandi Hills official site — https://example.org/nandi-hills',
+      },
+      // The snippet above no longer carries the hours; the auto-fetched page
+      // does. If the auto-fetch ever stops matching tools.ts, this answer
+      // becomes unwritable and the scenario goes red.
+      webPages: {
+        'https://example.org/nandi-hills': 'Nandi Hills gate hours: open 6:00 AM to 10:00 PM daily.',
       },
     },
     turns: [
@@ -57,8 +64,12 @@ export const WEB_SCENARIOS = scenarios([
         expect: {
           calls: [{ name: 'web_search', args: {} }],
           answer: {
+            // One honest phrase is required; the corpus integrity test proves
+            // the script can satisfy it. (The live planner phrased the same
+            // honesty as "did not yield any results" — wording differences on
+            // the real model are the live suite's concern, not this gate's.)
             mustContain: ['find'],
-            mustNotContain: ['could not search', 'failed', 'went wrong'],
+            mustNotContain: ['could not search', 'failed', 'went wrong', 'I searched the web'],
           },
         },
       },
@@ -66,7 +77,7 @@ export const WEB_SCENARIOS = scenarios([
     script: oneCall(
       'web_search',
       { query: 'Kaikondrahalli lake library opening hours' },
-      "I couldn't find anything about that — the search came back empty.",
+      "I couldn't find anything about that — the search yielded no results.",
     ),
   },
 
@@ -172,10 +183,19 @@ export const WEB_SCENARIOS = scenarios([
     now: '2026-08-12T09:15',
     world: {
       webResults: {
-        'metro': '- Namma Metro yellow line — https://example.org/metro — timings and fares',
+        'metro':
+          '- Namma Metro yellow line — https://example.org/metro\n' +
+          '- Metro weekday timetable — https://example.org/metro-timings',
       },
+      // The auto-fetched top page deliberately does NOT contain the hours —
+      // the model has to fetch the second URL itself. This is the one web
+      // turn where a second call is still the right move even though
+      // web_search now reads the top page for you.
       webPages: {
-        'https://example.org/metro': 'The yellow line runs from 5:00 AM to 11:00 PM on weekdays.',
+        'https://example.org/metro':
+          'The yellow line connects RV Road with Bommasandra. Fares depend on distance.',
+        'https://example.org/metro-timings':
+          'The yellow line runs from 5:00 AM to 11:00 PM on weekdays.',
       },
     },
     turns: [
@@ -184,7 +204,7 @@ export const WEB_SCENARIOS = scenarios([
         expect: {
           calls: [
             { name: 'web_search', args: {} },
-            { name: 'web_fetch', args: { url: 'https://example.org/metro' } },
+            { name: 'web_fetch', args: { url: 'https://example.org/metro-timings' } },
           ],
           answer: { mustContain: ['11'] },
         },
@@ -193,9 +213,61 @@ export const WEB_SCENARIOS = scenarios([
     script: chain(
       [
         { tool: 'web_search', args: { query: 'Namma Metro yellow line timings' } },
-        { tool: 'web_fetch', args: { url: 'https://example.org/metro' } },
+        { tool: 'web_fetch', args: { url: 'https://example.org/metro-timings' } },
       ],
       'The yellow line runs from 5 am to 11 pm on weekdays.',
     ),
+  },
+
+  // OBSERVED on a real phone (v1.2.0) and reproduced on the live-model
+  // harness the same day: asked for tonight's match result, the planner held
+  // a block of links and answered "The search results show that there is a
+  // live cricket score at https://example.org/scores" — no fetch, no result.
+  // The structural fix is the auto-fetch inside web_search (see tools.ts and
+  // parse.ts renderSearchTurn); this scenario pins it end to end. The
+  // planner's respond decision keys on the PAGE TEXT being in the transcript:
+  // if the auto-fetch stops matching tools.ts, the page never lands, this
+  // script can't reach its RESPOND entry, and the scenario goes red — as it
+  // must, because '187/9' appears nowhere else in the world.
+  {
+    id: 'web-search-delivers',
+    title: 'A web search answers with what the fetched page said',
+    tags: ['web', 'multistep'],
+    now: '2026-08-12T19:45',
+    world: {
+      webResults: {
+        match:
+          '- Live cricket score centre — https://example.org/scores\n' +
+          '- Cricinfo match coverage — https://example.org/cricket',
+      },
+      webPages: {
+        'https://example.org/scores': 'Tonight: RCB 210/4 beat MI 187/9 by 23 runs.',
+        'https://example.org/cricket': 'Ball-by-ball commentary from the middle.',
+      },
+    },
+    turns: [
+      {
+        user: "Search the web for tonight's match result",
+        expect: {
+          // ONE call: web_search reads the top page itself. A trailing
+          // web_fetch here would mean the model is still doing the fetching
+          // the harness was built to do for it.
+          calls: [{ name: 'web_search', args: {} }],
+          answer: {
+            mustContain: ['23'],
+            mustNotContain: ['I searched', 'https://', 'found several'],
+          },
+        },
+      },
+    ],
+    script: [
+      { when: ANSWER, text: 'RCB beat MI by 23 runs tonight.' },
+      // The page is in the transcript (the fixture's auto-fetch put it there)
+      // -> answer. If the auto-fetch regresses, this entry never fires: the
+      // planner re-searches, exhausts, and the turn ends without an answer.
+      { when: 'Tonight: RCB 210/4', text: RESPOND },
+      // First planning step -> the search.
+      { when: PLAN, text: call('web_search', { query: "tonight's match result" }) },
+    ],
   },
 ]);

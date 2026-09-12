@@ -644,6 +644,8 @@ export type TurnOutcome = {
   failed: string[];
   /** Labels of actions the user refused at the confirmation card. */
   denied: string[];
+  /** True when a web search ran, succeeded, and came back with nothing. */
+  emptySearch?: boolean;
 };
 
 export function answerNote(o: TurnOutcome): AgentMessage {
@@ -676,6 +678,25 @@ export function answerNote(o: TurnOutcome): AgentMessage {
         `Say plainly that it did not work and why.${why} Do NOT state an outcome — ` +
         `"nothing found" and "could not look" are different things, and this was ` +
         `the second one.`,
+    };
+  }
+  // The search ran fine and found NOTHING. Observed on a real phone
+  // (v1.2.0, 2026-09-12): "Search the web for tonight's match result" was
+  // answered with "I searched the web for tonight's match results" — a
+  // sentence about the searching, with nothing behind it. With the empty
+  // marker in the results there is nothing to answer from, so the honest
+  // reply has one shape, and every other way of putting it is the lie above.
+  // Sits BEFORE the generic read branch: that branch says "answer from what
+  // the tool returned", and what it returned was the absence of results.
+  if (o.emptySearch && !o.acted) {
+    return {
+      role: 'user',
+      content:
+        open +
+        `Your search ran, but it found NOTHING — the result literally said ` +
+        `"No results found." Tell me that, in one short sentence: you looked ` +
+        `and nothing came back. Do NOT describe the searching as if it ` +
+        `succeeded, do NOT say you found results, and do NOT make anything up.`,
     };
   }
   // A read wants the ANSWER, not a travelogue of the search: the results are

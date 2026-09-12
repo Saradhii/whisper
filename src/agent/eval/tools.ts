@@ -18,6 +18,7 @@
 //
 // Pure module — no Expo, no react-native — so the whole registry runs in Node.
 import { atTime, mediaMatches, TOOL_DEFS } from '@/src/agent/toolDefs';
+import { renderSearchTurn } from '@/src/agent/parse';
 import { defineTool, type AnyTool } from '@/src/agent/types';
 
 import type { World } from './types';
@@ -205,7 +206,19 @@ export function buildFakeTools(world: World, now: Date = new Date()): AnyTool[] 
         // A miss is a RESULT, not an error. "No results found." is a legitimate
         // answer the model is taught to report and stop on, and turning it into
         // a throw would score the wrong branch of answerNote().
-        return hit?.[1] ?? 'No results found.';
+        if (!hit) return 'No results found.';
+        // Mirror the REAL executor's auto-fetch (see tools.ts): the first URL
+        // in the block is "fetched" from the world's pages and the page text
+        // leads the result. A fixture that returned bare links would score a
+        // behaviour the app no longer ships — web-search-delivers goes red if
+        // this ever stops matching tools.ts.
+        const urlMatch = /https?:\/\/\S+/.exec(hit[1]);
+        const page = urlMatch ? world.webPages[urlMatch[0]] : undefined;
+        return renderSearchTurn(
+          a.query,
+          page !== undefined && urlMatch ? { url: urlMatch[0], text: page } : null,
+          hit[1],
+        );
       },
     }),
     defineTool({

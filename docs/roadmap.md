@@ -245,3 +245,30 @@ its replay scenario, and the floors went 79 → 81 with them.
 - The reserve ratchet paid for it knowingly: TOOL_PROMPT_RESERVE 3200 → 3286,
   each of the 86 tokens traceable to one of the fixes above, ~4900 tokens of
   history left at nCtx 8192.
+
+## 2026-09-12 live-model pass — the web-search fix, measured
+
+The v1.2.0 description-level teaching (fetch the page when results are links)
+did not survive contact with the real planner. The real-model harness, run on
+Windows for the first time (node-llama-cpp runner + Qwen3-1.7B-Q4_K_M, vulkan),
+reproduced the phone exactly: with a block of links in the transcript, the
+planner answered "The search results show that there is a live cricket score at
+https://example.org/scores" — no fetch, with the hint in view. Teaching is not
+enough at 1.7B; the harness now does the reading.
+
+- `web_search` auto-fetches the top result and returns its page text ahead of
+  the remaining links (`parse.ts renderSearchTurn`, `tools.ts readPage`); the
+  fixture mirrors the shape. `web-search-delivers` pins it — its scripted
+  respond decision keys on the page text, so a fixture or executor regression
+  reddens it.
+- `answerNote` gained an `emptySearch` branch: a search that ran and found
+  nothing must be answered with the absence, never with a sentence about the
+  searching (the second half of the phone report).
+- New ablation `fetched-page`: cutting the page from the result flips
+  web-search-delivers red live ("the exact match result is not provided
+  here"), which is the falsifiability proof the hint version never had.
+- Live web-subset scores, same model, same seed: completed 3/10 → 4/10 and
+  answers 6/10 → 7/10 with the fix; the ablated arm loses web-search-delivers
+  specifically. Still owed live: the two-step web chain (web-search-then-fetch
+  stays red live — a 1.7B taking a THIRD decision), web-fetch-given-url
+  (open_url chosen for a read), web-maps-nearest (no call at all).

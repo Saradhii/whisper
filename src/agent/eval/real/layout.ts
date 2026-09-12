@@ -126,6 +126,12 @@ function takeDates(ref: string, what: string): { without: string; table: string;
 // Ablations
 // ---------------------------------------------------------------------------
 
+/** The auto-fetch marker line from renderSearchTurn(), as SHIPPED — the seam
+ *  the 'fetched-page' ablation cuts from. Kept in sync with parse.ts by
+ *  import; a rewording there changes this constant and the ablation silently
+ *  stops applying, which the corpus's own red-under-ablation check exposes. */
+import { TOP_RESULT_MARK as FETCHED_PAGE_SEAM } from '@/src/agent/parse';
+
 export type Ablation =
   /** Ship exactly what `prompt.ts` renders. */
   | 'none'
@@ -136,9 +142,16 @@ export type Ablation =
   /** Remove the date table AND the relative-time anchors — the full "no lookup
    *  table, do the arithmetic yourself" condition the anchors exist to
    *  prevent. */
-  | 'anchors';
+  | 'anchors'
+  /** Cut the auto-fetched top-result page out of every web_search result.
+   *  web-search-delivers must go red under this — it is the live-run proof
+   *  that the PAGE, not the model's own diligence, is what the answer comes
+   *  from. Everything from the seam marker to the end of the result is cut:
+   *  the page leads the block and the links behind it are dead weight once
+   *  the reading has been done for the model. */
+  | 'fetched-page';
 
-export const ABLATIONS: Ablation[] = ['none', 'dates', 'anchors'];
+export const ABLATIONS: Ablation[] = ['none', 'dates', 'anchors', 'fetched-page'];
 
 /**
  * Cut the fenced relative-time sentence out of a reference block.
@@ -165,6 +178,18 @@ function stripRelativeTimes(content: string): string {
  */
 export function ablate(content: string, mode: Ablation): string | null {
   if (mode === 'none') return null;
+  // 'fetched-page' cuts everything from the auto-fetch marker to the end of
+  // the result — the page and the links behind it. Tool results are recorded
+  // as `Result of web_search: …`, which does not start with REF_HEAD, so
+  // unlike the date ablations this one cannot be gated on the reference
+  // block. A miss must THROW only when the marker is present but the cut
+  // fails; a result without the marker (no results, or the fetch failed)
+  // legitimately does not apply.
+  if (mode === 'fetched-page') {
+    const at = content.indexOf(FETCHED_PAGE_SEAM);
+    if (at === -1) return null;
+    return content.slice(0, at);
+  }
   if (!content.startsWith(REF_HEAD)) return null;
   const { without } = takeDates(content, mode);
   return mode === 'dates' ? without : stripRelativeTimes(without);

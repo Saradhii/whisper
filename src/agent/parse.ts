@@ -93,14 +93,56 @@ export function parseSearchResults(html: string, limit = 5): SearchResult[] {
   return out;
 }
 
-/** Render parsed hits for the model. Every field is capped: five "capped"
- *  results are not bounded if a single title or snippet inside them is not. */
-export function formatSearchResults(results: SearchResult[]): string {
-  if (!results.length) return 'No results found.';
+/**
+ * The result block a web search returns: the top result's PAGE, fetched for
+ * the model, plus the remaining links.
+ *
+ * Why the fetch lives HERE and not in the planner: observed on a real phone
+ * (v1.2.0) and reproduced on the live-model harness the same day — asked for
+ * tonight's match result, Qwen3 1.7B called web_search, HELD a block of links,
+ * and answered "The search results show that there is a live cricket score at
+ * https://example.org/scores" — with the hint line teaching it to fetch
+ * sitting right there in the result. A 1.7B planner does not take a second
+ * tool decision it was told about; it takes the one the transcript makes
+ * obvious. The harness does the reading; the model answers from what it read.
+ *
+ * Exported rather than private so the eval fixture (eval/tools.ts) assembles
+ * the byte-identical shape from its canned world, and the real-model harness
+ * can ablate the fetched page (layout.ts 'fetched-page') and prove the
+ * scenario red without it.
+ */
+export const TOP_RESULT_MARK = 'Fetched the top result for you:';
+
+export type FetchedTop = { url: string; text: string };
+
+/** Assemble the search-result block. `links` are pre-rendered `- title — url`
+ *  lines for everything OTHER than the top result; `top` is the fetched page
+ *  (null when the fetch failed — the links then carry the turn, with a line
+ *  telling the model it must fetch for itself). The page goes FIRST and the
+ *  links after it: loop.ts clamps long results from the end, and the page is
+ *  the payload while the links are only a fallback. */
+export function renderSearchTurn(query: string, top: FetchedTop | null, links: string): string {
+  if (!top) {
+    return (
+      `Searched the web for "${query}".\n${links}\n` +
+      `(The top result could not be read. If you need its content, call ` +
+      `web_fetch with one of the URLs above yourself.)`
+    );
+  }
+  return (
+    `Searched the web for "${query}". ${TOP_RESULT_MARK}\n` +
+    `--- ${top.url} ---\n` +
+    `${cap(top.text, 1100)}\n` +
+    `Other results (call web_fetch with a URL if you need one):\n${links}`
+  );
+}
+
+/** Render the hits OTHER than the fetched top result as `- title — url` lines.
+ *  No snippets: the page is the payload, these lines only have to be
+ *  identifiable for a follow-up web_fetch. */
+export function formatOtherResults(results: SearchResult[], skipUrl?: string): string {
   return results
-    .map(
-      (r) =>
-        `- ${cap(r.title, 120)}\n  ${cap(r.url, 160)}${r.snippet ? `\n  ${cap(r.snippet, 240)}` : ''}`,
-    )
+    .filter((r) => r.url !== skipUrl)
+    .map((r) => `- ${cap(r.title, 80)} — ${cap(r.url, 160)}`)
     .join('\n');
 }

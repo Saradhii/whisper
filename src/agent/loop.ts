@@ -511,7 +511,18 @@ export async function runAgent(
   // and those get evaluated here instead. That is not waste — they are new
   // either way — but it is why a cache log can show the answer phase diverging
   // early and it does not mean a prefix was thrown away.
-  messages.push(answerNote({ ran, acted, failed: failures, denied: denials }));
+  messages.push(
+    answerNote({
+      ran,
+      acted,
+      failed: failures,
+      denied: denials,
+      // A web search that RAN and found nothing must not be answered as if it
+      // returned something — that exact deflection shipped (v1.2.0: "I
+      // searched the web for tonight's match results", nothing behind it).
+      emptySearch: results.includes('No results found.'),
+    }),
+  );
   const answerTail = tailLabel(messages);
   const started = Date.now();
   let streamed = '';

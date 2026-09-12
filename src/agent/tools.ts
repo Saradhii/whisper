@@ -16,7 +16,13 @@ import * as MediaLibrary from 'expo-media-library';
 import * as Notifications from 'expo-notifications';
 import { Linking, Platform } from 'react-native';
 
-import { cap, formatSearchResults, htmlToText, parseSearchResults } from './parse';
+import {
+  cap,
+  formatOtherResults,
+  htmlToText,
+  parseSearchResults,
+  renderSearchTurn,
+} from './parse';
 import { atTime, mediaMatches, TOOL_DEFS } from './toolDefs';
 import { defineTool, type AnyTool } from './types';
 import { setTorch } from '@/src/torch/Torch';
@@ -33,6 +39,37 @@ const BROWSER_UA = 'Mozilla/5.0 (Android 15; Mobile)';
 /** Hard ceiling on a response body we are willing to pull into JS memory.
  *  Requested via Range so a compliant server never sends more than this. */
 const MAX_BODY_BYTES = 512 * 1024;
+
+/** Fetch a URL and return its readable text, with every guard the web_fetch
+ *  tool enforces (content-type, declared size, body cap). Shared by web_fetch
+ *  and by web_search's auto-fetch of the top result. */
+async function readPage(url: string): Promise<string> {
+  const res = await fetchWithTimeout(url, MAX_BODY_BYTES);
+  // 206 is the success case when the Range header was honoured.
+  if (!res.ok && res.status !== 206) {
+    throw new Error(`The page returned HTTP ${res.status}.`);
+  }
+  // Guard before materializing the body: a binary or huge response would
+  // otherwise be fully buffered in JS memory just to be thrown away.
+  const type = res.headers.get('content-type') ?? '';
+  if (type && !/text|html|json|xml/i.test(type)) {
+    throw new Error(`Not a readable page (content-type: ${type.split(';')[0]}).`);
+  }
+  // A chunked or gzip-streamed response carries NO Content-Length, and the
+  // old `Number(null ?? 0) > 5MB` check passed every one of them — so the
+  // guard was absent on exactly the responses most likely to be huge. The
+  // Range request above is the real bound; this only catches a declared
+  // oversize body early, and a missing length is no longer treated as 0.
+  const declared = Number(res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > 5 * 1024 * 1024) {
+    throw new Error('Page is too large to read (over 5 MB).');
+  }
+  // Slice the RAW body before htmlToText: those are seven regex passes, and
+  // running them over a multi-megabyte string is both the allocation and the
+  // CPU spike we are trying to avoid.
+  const body = (await res.text()).slice(0, MAX_BODY_BYTES);
+  return htmlToText(body).slice(0, 4000);
+}
 
 async function fetchWithTimeout(url: string, maxBytes?: number): Promise<Response> {
   const controller = new AbortController();
@@ -232,40 +269,34 @@ export const TOOLS: AnyTool[] = [
         throw new Error(`Search failed (HTTP ${res.status}). Try again in a moment.`);
       }
       // Parsing lives in ./parse.ts so it can be tested against a saved page;
-      // this executor is now only the fetch and the error message.
-      return formatSearchResults(parseSearchResults(await res.text()));
+      // this executor is the fetch, the auto-read of the top result, and the
+      // error message.
+      const results = parseSearchResults(await res.text());
+      if (!results.length) return 'No results found.';
+      // Read the top result FOR the model. Observed on a real phone and on the
+      // live-model harness within the same hour: given links, a 1.7B planner
+      // answers with "the search results show <the links>" and never fetches —
+      // the hint, the description, nothing moved it. The harness does the
+      // reading; the model answers from what it read (see parse.ts
+      // renderSearchTurn for the contract and the fixture for the mirror).
+      const top = results[0]!;
+      let fetched: { url: string; text: string } | null = null;
+      try {
+        const text = await readPage(top.url);
+        if (text) fetched = { url: top.url, text };
+      } catch {
+        // The links carry the turn, with a line telling the model it must
+        // fetch one itself (renderSearchTurn's no-top branch).
+      }
+      return renderSearchTurn(a.query, fetched, formatOtherResults(results, top.url));
     },
   }),
   defineTool({
     name: 'web_fetch',
     ...TOOL_DEFS.web_fetch,
     execute: async (a) => {
-      const res = await fetchWithTimeout(a.url, MAX_BODY_BYTES);
-      // 206 is the success case when the Range header was honoured.
-      if (!res.ok && res.status !== 206) {
-        throw new Error(`The page returned HTTP ${res.status}.`);
-      }
-      // Guard before materializing the body: a binary or huge response would
-      // otherwise be fully buffered in JS memory just to be thrown away.
-      const type = res.headers.get('content-type') ?? '';
-      if (type && !/text|html|json|xml/i.test(type)) {
-        throw new Error(`Not a readable page (content-type: ${type.split(';')[0]}).`);
-      }
-      // A chunked or gzip-streamed response carries NO Content-Length, and the
-      // old `Number(null ?? 0) > 5MB` check passed every one of them — so the
-      // guard was absent on exactly the responses most likely to be huge. The
-      // Range request above is the real bound; this only catches a declared
-      // oversize body early, and a missing length is no longer treated as 0.
-      const declared = Number(res.headers.get('content-length'));
-      if (Number.isFinite(declared) && declared > 5 * 1024 * 1024) {
-        throw new Error('Page is too large to read (over 5 MB).');
-      }
-      // Slice the RAW body before htmlToText: those are seven regex passes, and
-      // running them over a multi-megabyte string is both the allocation and the
-      // CPU spike we are trying to avoid.
-      const body = (await res.text()).slice(0, MAX_BODY_BYTES);
-      const text = htmlToText(body);
-      return text.slice(0, 4000) || 'Page had no readable text.';
+      const text = await readPage(a.url);
+      return text || 'Page had no readable text.';
     },
   }),
   defineTool({
