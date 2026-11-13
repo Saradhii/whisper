@@ -63,11 +63,14 @@ const MAX_CALLS_PER_TOOL = 2;
  * that looks generous against the old numbers is not evidence it can be spent.
  * Re-derive from toolPromptReserve() before changing anything here.
  *
- * Overflowing is not a soft failure. `ctx_shift` discards from the FRONT and
- * llama.rn does not expose `n_keep`, so the first thing evicted is the system
- * prompt — the tool catalog and the JSON protocol. The grammar keeps the output
- * well-formed, so the model goes on emitting valid tool calls chosen from a
- * catalog it can no longer see. Bounding here is what keeps that unreachable.
+ * Overflowing is not a soft failure. When this was written `ctx_shift`
+ * discarded from the FRONT and llama.rn did not expose `n_keep`, so the first
+ * thing evicted was the system prompt — the tool catalog and the JSON protocol
+ * — while the grammar kept the output well-formed: valid tool calls chosen from
+ * a catalog the model could no longer see. Since llama.rn 0.13 the engine pins
+ * the system turn with `n_keep` (LlamaEngine.systemKeepTokens), so an overflow
+ * now evicts the oldest CONVERSATION instead. That is still a silent loss, and
+ * a shift still re-prefills the entire next turn, so bounding here stays.
  */
 const TURN_RESULT_TOKENS = 320;
 

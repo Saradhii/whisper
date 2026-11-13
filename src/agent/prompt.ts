@@ -141,7 +141,9 @@ export function toolPromptReserve(tools: AnyTool[], now: Date = new Date()): num
  *   + history 1280 (what 2816 leaves) + traffic 460 + generate 320
  *   = 4133 against nCtx 4096 — an overflow of 37 tokens.
  *
- * That overflow is not soft. `ctx_shift` discards from the FRONT and llama.rn
+ * That overflow is not soft. (As measured on llama.rn 0.12.5; 0.13 lets the
+ * engine pin the system turn with `n_keep`, which changes WHAT is lost, not
+ * that something is.) `ctx_shift` discards from the FRONT and llama.rn
  * pins `n_keep` at 0, so the first thing evicted is the system prompt: the
  * model goes on emitting well-formed tool calls, chosen by a grammar, from a
  * catalog it can no longer see. loop.ts bounds tool results specifically to
