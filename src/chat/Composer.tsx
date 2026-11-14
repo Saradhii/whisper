@@ -153,9 +153,12 @@ export default function Composer({
       // ChatOrb.
       theme={scheme}
       borderRadius={CARD_RADIUS}
-      // Always on, by design decision. If the GPU cost ever needs reclaiming,
-      // `active={busy}` is the one-word change: it ties the beam to the model
-      // working, and the component already cross-fades on that prop.
+      // Off while the model works. The beam is three runtime-shader passes and
+      // a blur redrawn every frame, and the UI/render threads it keeps busy
+      // land on the same big cores as llama's four decode threads — whose
+      // thread pool stalls whenever one worker is descheduled. Idle is when
+      // the decoration is free; the component cross-fades on this prop.
+      active={!busy}
       style={[styles.beam, { marginBottom: bottomInset + 8 }]}>
       <View style={styles.card}>
         {recording ? (

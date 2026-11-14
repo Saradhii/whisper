@@ -46,7 +46,7 @@ import * as Tts from '@/src/voice/tts/TtsService';
 import * as TtsStore from '@/src/voice/tts/TtsStore';
 import { useVoiceInput } from '@/src/voice/useVoiceInput';
 import { splitThinking } from '@/src/chat/thinking';
-import { estimateTokens, trimToBudget, type CountedMessage } from '@/src/chat/historyBudget';
+import { estimateTokens, trimStart, type CountedMessage } from '@/src/chat/historyBudget';
 import * as ChatStore from '@/src/chat/store';
 import { usePerfHarness } from '@/src/dev/perfHarness';
 import { engineFor, unloadAll, type ChatMessage, type Engine } from '@/src/engines';
@@ -174,6 +174,8 @@ export default function Chat() {
   // Tokenizer counts per settled message, so history budgeting doesn't re-count
   // the whole conversation every send.
   const tokenCounts = useRef(new Map<string, number>());
+  // Id of the first message the last turn actually sent (see trimStart).
+  const trimStartId = useRef<string | null>(null);
 
   // Voice input: transcribed text is appended to whatever's already typed.
   const voice = useVoiceInput((text) =>
@@ -243,27 +245,6 @@ export default function Chat() {
       .then(() => {
         if (cancelled) return;
         setLoadState({ id: spec.id });
-        // Evaluate the agent's system message into the KV cache NOW, while the
-        // user is still looking at an empty chat. It is 7026 characters —
-        // ~1825 Qwen3 tokens — of tool catalog, worked examples and the
-        // seven-day date table, identical for every turn on a given day,
-        // and until this ran it was evaluated for the first time inside the
-        // user's first message — measured at 37.2s of a 41.2s opening turn.
-        // Best-effort and unawaited: if it fails or the user sends first, the
-        // turn just pays what it used to.
-        //
-        // ONLY for a model that will actually run the agent. A model without
-        // `tools` never calls runAgent — every turn goes down the plain-chat
-        // path with `chatSystemPrompt`, which shares almost nothing with this
-        // prefix. Warming it for such a model spends ~28s of CPU on the test
-        // AVD, the battery that costs on a phone, and (since the prefix KV
-        // snapshot landed) a ~100 MB write to the cache directory, to populate
-        // a cache that can never be hit. The catalog's own recommended vision
-        // model is exactly this case.
-        if (spec.tools) void engineFor(spec).prewarm?.(agentPrefix(TOOLS));
-        // First load of an uncensored model → run the canary self-test in the
-        // background (does not block chat; result drives the header badge).
-        void ensureVerified(spec);
       })
       .catch((e: unknown) => {
         if (!cancelled) {
@@ -396,6 +377,88 @@ export default function Chat() {
     return n;
   };
 
+  // The history a turn will send: machinery rows dropped, images stripped,
+  // trimmed to the model's context window (see historyBudget.ts for why trims
+  // are rare-but-large: KV-cache prefix reuse). Shared by the turn itself and
+  // by the conversation prewarm, which must render the SAME messages or it
+  // warms a prefix the turn then misses.
+  const budgetedHistory = async (
+    engine: Engine,
+    nCtx: number,
+    turnMessages: UiMessage[],
+    useTools: boolean,
+  ): Promise<ChatMessage[]> => {
+    const source = turnMessages.filter((m) => !isMachinery(m));
+    const counted: CountedMessage<ChatMessage>[] = [];
+    for (const m of source) {
+      const stripped = stripImage(m);
+      counted.push({ message: stripped, tokens: await countTokens(engine, m.id, stripped.content) });
+    }
+    // Sticky: resume from where the previous turn's window started, so a
+    // conversation that was trimmed once is not re-trimmed (and its whole KV
+    // prefix thrown away) on every turn after. An id that is no longer in the
+    // list — another conversation, or a cleared one — restarts from the top.
+    const prevStart = Math.max(
+      0,
+      source.findIndex((m) => m.id === trimStartId.current),
+    );
+    const start = trimStart(
+      counted,
+      historyBudget(nCtx, useTools, Settings.get().maxTokens),
+      prevStart,
+    );
+    trimStartId.current = source[start]?.id ?? null;
+    return counted.slice(start).map((c) => c.message);
+  };
+
+  // Warm the KV cache for the turn the user is about to send, while they are
+  // still reading or typing: the agent's system message (~7.3k characters,
+  // ~1970 tokens of tool catalog, rules and worked examples) AND the open
+  // conversation's history. Until the prefix was warmed, it was evaluated for
+  // the first time inside the user's first message — measured at 37.2s of a
+  // 41.2s opening turn; the history had the same problem on every cold start
+  // and every conversation switch, where the first message re-read the whole
+  // chat before answering.
+  //
+  // Runs when the model becomes ready and when the open conversation changes —
+  // not after each turn, where the cache is already exactly this.
+  //
+  // ONLY for a model that will actually run the agent. A model without `tools`
+  // never calls runAgent — every turn goes down the plain-chat path with
+  // `chatSystemPrompt`, which shares almost nothing with this prefix.
+  //
+  // Best-effort and unawaited: if it fails or the user sends first, the turn
+  // cancels it and pays what it would have paid anyway.
+  const warmFor = ready && activeId && syncedConv !== undefined ? `${activeId}|${syncedConv}` : null;
+  useEffect(() => {
+    if (!warmFor) return;
+    const spec = activeId ? ModelManager.getModel(activeId) : null;
+    if (!spec) return;
+    let cancelled = false;
+    const turnAtWarm = turnRef.current;
+    void (async () => {
+      // First load of an uncensored model → run the canary self-test (result
+      // drives the header badge). BEFORE the warm-up, not beside it: its
+      // generations evict whatever the cache holds, so a prewarm that ran
+      // first would be thrown away.
+      await ensureVerified(spec).catch(() => {});
+      if (cancelled || !spec.tools) return;
+      const engine = engineFor(spec);
+      const history = await budgetedHistory(
+        engine,
+        spec.nCtx,
+        ChatStore.getCurrentMessages().map((m) => ({ ...m })),
+        true,
+      ).catch(() => [] as ChatMessage[]);
+      if (cancelled || turnRef.current !== turnAtWarm) return;
+      await engine.prewarm?.([...agentPrefix(TOOLS), ...history]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on warmFor
+  }, [warmFor]);
+
   // Takes the text explicitly rather than reading `input`, so a suggestion chip
   // can send its own text in one tap — routing it through setInput would only
   // be readable on the next render.
@@ -440,6 +503,11 @@ export default function Chat() {
     // clear `busy` out from under the turn that replaced it.
     const stale = () => turn !== turnRef.current;
     const engine = engineFor(active);
+    // A real turn outranks speculative work. Said here, before the history is
+    // even counted: countTokens() queues behind a running prewarm, so without
+    // this the turn would wait out the whole warm-up before generate() got the
+    // chance to cut it short.
+    engine.cancelPrewarm?.();
     setBusy(true);
     setThinking({ kind: 'thinking' }); // orb up immediately, during prefill
     producedRef.current = false;
@@ -449,19 +517,8 @@ export default function Chat() {
 
     try {
       const useTools = !!active.tools && !attachedImage;
-      // Budget the history to the model's context window (see historyBudget.ts
-      // for why trims are rare-but-large: KV-cache prefix reuse).
-      const source = turnMessages.filter((m) => !isMachinery(m));
-      const counted: CountedMessage<ChatMessage>[] = [];
-      for (const m of source) {
-        const stripped = stripImage(m);
-        counted.push({ message: stripped, tokens: await countTokens(engine, m.id, stripped.content) });
-      }
       const prefs = Settings.get();
-      const history = trimToBudget(
-        counted,
-        historyBudget(active.nCtx, useTools, prefs.maxTokens),
-      );
+      const history = await budgetedHistory(engine, active.nCtx, turnMessages, useTools);
 
       if (useTools) {
         // Agent path: the model can call phone tools in a loop.

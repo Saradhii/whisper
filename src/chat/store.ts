@@ -176,6 +176,15 @@ async function readConversation(id: string): Promise<StoredMessage[]> {
 let writeTimer: ReturnType<typeof setTimeout> | null = null;
 
 function scheduleWrite(): void {
+  // Off-screen there is no debounce to be had: React Native pauses JS timers
+  // while the Android activity is paused, so a setTimeout armed here would not
+  // fire until the user came back. A turn that finishes in the background
+  // (the keep-alive service lets it) would sit unwritten for exactly as long
+  // as the process is most likely to be killed.
+  if (AppState.currentState !== 'active') {
+    void flushWrites();
+    return;
+  }
   if (writeTimer) return;
   writeTimer = setTimeout(() => void flushWrites(), WRITE_DEBOUNCE_MS);
 }

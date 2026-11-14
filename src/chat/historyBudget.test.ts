@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { estimateTokens, trimToBudget, type CountedMessage } from './historyBudget';
+import { estimateTokens, trimStart, trimToBudget, type CountedMessage } from './historyBudget';
 
 const msg = (id: string, tokens: number): CountedMessage<string> => ({ message: id, tokens });
 
@@ -47,5 +47,34 @@ describe('estimateTokens', () => {
     expect(estimateTokens('')).toBe(0);
     expect(estimateTokens('hi')).toBeGreaterThan(0);
     expect(estimateTokens('a'.repeat(350))).toBe(100);
+  });
+});
+
+describe('trimStart (sticky)', () => {
+  it('does not re-trim on the turns after a cut', () => {
+    // 10 × 108 = 1080 > 1000 → cut to ≤ 750.
+    const counted = Array.from({ length: 10 }, (_, i) => msg(`m${i}`, 100));
+    const first = trimStart(counted, 1000);
+    expect(first).toBeGreaterThan(0);
+    // Two more messages arrive. Measured from 0 this is still over budget —
+    // the stateless trim would move the start again; the sticky one must not.
+    counted.push(msg('m10', 100), msg('m11', 100));
+    expect(trimStart(counted, 1000, first)).toBe(first);
+    expect(trimStart(counted, 1000)).not.toBe(first);
+  });
+
+  it('cuts again, forward only, once the window refills', () => {
+    const counted = Array.from({ length: 10 }, (_, i) => msg(`m${i}`, 100));
+    const first = trimStart(counted, 1000);
+    for (let i = 10; i < 20; i++) counted.push(msg(`m${i}`, 100));
+    const second = trimStart(counted, 1000, first);
+    expect(second).toBeGreaterThan(first);
+    expect(second).toBeLessThan(counted.length);
+  });
+
+  it('clamps a stale start past the end of a shorter list', () => {
+    const counted = [msg('a', 10), msg('b', 10)];
+    expect(trimStart(counted, 1000, 7)).toBe(1);
+    expect(trimStart([], 1000, 3)).toBe(0);
   });
 });

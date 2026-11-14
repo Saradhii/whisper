@@ -23,20 +23,38 @@ export function estimateTokens(text: string): number {
 }
 
 /**
- * Return the newest messages that fit `budget` tokens. The newest message is
- * always kept, even if it alone exceeds the budget (the engine's ctx_shift
- * backstop handles that pathological case).
+ * Index of the first message to send, given where the previous turn started.
+ *
+ * The trim is STICKY: a conversation that was cut once stays over budget when
+ * measured from message 0 forever after, so a stateless trim re-cuts it on
+ * every following turn — each time from a slightly later message, each time
+ * invalidating the whole KV prefix. Measuring from `prevStart` instead means a
+ * cut happens once and the following turns extend a byte-stable prompt until
+ * the window genuinely fills again.
+ *
+ * The newest message is always kept, even if it alone exceeds the budget (the
+ * engine's ctx_shift backstop handles that pathological case).
  */
-export function trimToBudget<T>(counted: CountedMessage<T>[], budget: number): T[] {
+export function trimStart<T>(
+  counted: CountedMessage<T>[],
+  budget: number,
+  prevStart = 0,
+): number {
   const cost = (c: CountedMessage<T>) => c.tokens + MESSAGE_OVERHEAD;
-  let total = counted.reduce((sum, c) => sum + cost(c), 0);
-  if (total <= budget) return counted.map((c) => c.message);
+  let start = Math.min(Math.max(prevStart, 0), Math.max(counted.length - 1, 0));
+  let total = 0;
+  for (let i = start; i < counted.length; i++) total += cost(counted[i]!);
+  if (total <= budget) return start;
 
   const target = Math.floor(budget * TRIM_TARGET);
-  let start = 0;
   while (start < counted.length - 1 && total > target) {
     total -= cost(counted[start]!);
     start++;
   }
-  return counted.slice(start).map((c) => c.message);
+  return start;
+}
+
+/** Stateless form: the newest messages that fit `budget` tokens. */
+export function trimToBudget<T>(counted: CountedMessage<T>[], budget: number): T[] {
+  return counted.slice(trimStart(counted, budget)).map((c) => c.message);
 }
