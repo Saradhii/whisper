@@ -1080,3 +1080,87 @@ happens when it should not, with no assertion firing either way:
 
 The remedy in every case is the same, and it is not more vigilance: **assert
 what the tool actually DID, not that it ran.**
+
+---
+
+## 2026-11-13 — llama.rn 0.12.5 -> 0.13.0-rc.11, and what llama.cpp v1.0.0 changes
+
+llama.cpp tagged v1.0.0 today (API/ABI now semver'd). No llama.rn release
+carries it yet: 0.13.0-rc.11 (2026-11-12) vendors **b12292**, about seventy
+builds short of the tag. 0.12.5 vendored b9769, from June. The bump was done by
+source-diffing the two llama.rn tarballs against the claims in this document.
+**Nothing below is measured.** Typecheck and lint are clean and the suite is
+unchanged by the bump (367 of 370 in the Linux container it was run in; the 3
+failures are a "pm"/"PM" locale difference there and fail identically without
+this change). No APK was built and no device was run. The phone protocol is
+the gate, as before.
+
+Side effect worth knowing: the two `build.gradle` patches were written with
+bare `a/android/...` paths, which patch-package rejects, so `postinstall`
+failed on a clean install. Both were regenerated in patch-package's format.
+
+### Claims in this document that are no longer true
+
+- **`n_keep` is reachable from JS** (rc.9), per completion. The engine now sets
+  it to the token length of the rendered system turn, so a context shift evicts
+  old conversation instead of the tool catalog. Still true: a shift costs a
+  full re-prefill on the next turn. It is a correctness backstop, not a speedup.
+- **`bench()` is only half fixed.** rc.10 makes it START from a clean state
+  after a completion. It still ends on a bare `llama_memory_clear`, so the
+  trap described above — a stale `embd` over an empty KV — is not shown to be
+  gone. Keep the `clearCache()` in `perfHarness.ts`.
+- **Every `rn-completion.cpp:NNN` line reference above is stale.** The file
+  went from ~1100 to ~1900 lines. `find_common_prefix_length` is still the
+  reuse rule for pure-attention models (all the Qwen/Llama/Phi/SmolLM entries).
+- **The 0.12.5 reuse path was unsound on Gemma.** It trusted a successful
+  `seq_rm` on sliding-window models; 0.12.7+ verifies the rollback landed
+  inside the retained window and otherwise restores a checkpoint or clears.
+  Both Gemma entries in the catalog are SWA models.
+
+### Still true, re-verified in rc.11 source
+
+- `n_threads_batch` is still not settable from JS. The batch pool now inherits
+  `n_threads` explicitly rather than by accident. Still a 2-line patch, and
+  still requires `rnllamaBuildFromSource=true`.
+- `n_cache_reuse` is still never read. No middle-reuse.
+- The odd-micro-batch fallback (`ne11 % 2 != 0` -> 1-row `vec_dot`) is still
+  in `ggml-cpu.c`, now around line 1473.
+- Hexagon is still opt-in, now documented: `devices: ['HTP0']`.
+
+### New behaviour to measure before trusting
+
+- **A checkpoint cache on SWA/recurrent models, default 160 MiB**
+  (`state_cache_budget_mb`, `state_cache_max_checkpoints` default 8). It is a
+  no-op on pure-attention models. On Gemma it is new ANONYMOUS memory on the
+  catalog's most memory-tight entries (E2B carries a 940 MiB projector). Read
+  `RssAnon` on a Gemma chat before and after; if it bites, set the budget down
+  in `initContext` rather than to 0, which reverts to full re-prefill.
+- **Session files.** A prefix or suspend snapshot written by 0.12.5 may not
+  load. Both call sites already fall back to a re-prefill, and the GPU probe
+  re-runs on a new `versionCode`, so the first launch after the update is slow
+  once and then normal. Bump `versionCode`.
+- **APK size.** rc.11 adds TTS (codec.cpp) and decision-model code to the
+  prebuilt `.so` set. Compare the release APK against v1.1.0.
+
+### v1.0.0 items that touch this app
+
+From the v1.0.0 release notes. Only the first was checked against the vendored
+b12292 tree (absent); the rest merged close enough to it that their presence in
+rc.11 is NOT established either way — read the next llama.rn sync's changelog
+rather than this list.
+
+- OpenCL decomposed flash attention for Adreno (#32046) — not in rc.11.
+  Matters only where `gpu-probe.txt` reads `ok`.
+- Scheduler/graph reuse across reserves (#32009, #32089, #32043) and a shared
+  compute buffer for mtmd subcontexts (#31945) — memory, relevant to Gemma
+  vision.
+- State-copy sizes for quantized KV caches (#30541) — this app saves sessions
+  with q8_0 K and V; worth re-reading when it lands.
+- FP8 KV caches (`f8_e4m3`) — same 8 bits as the q8_0 already shipped. Not a
+  memory win here; do not chase it.
+- Removed in v1.0.0: `defrag_thold`, `llama_set_warmup`, 35 deprecated
+  functions. Not this app's problem — llama.rn absorbs it — but it is why the
+  next sync may take longer than usual.
+
+Nothing in v1.0.0 is a prefill breakthrough for a CPU-bound, repack-off Q4_K
+path. The governing sentence at the top of this document is unchanged.

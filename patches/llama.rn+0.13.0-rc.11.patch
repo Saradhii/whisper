@@ -1,7 +1,7 @@
-diff --git a/android/build.gradle b/android/build.gradle
-index 10d8fd3..79aaeee 100644
---- a/android/build.gradle
-+++ b/android/build.gradle	
+diff --git a/node_modules/llama.rn/android/build.gradle b/node_modules/llama.rn/android/build.gradle
+index 974aa85..1c1ed5b 100644
+--- a/node_modules/llama.rn/android/build.gradle
++++ b/node_modules/llama.rn/android/build.gradle
 @@ -147,7 +147,11 @@ android {
        "-DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON",
        "-DRNLLAMA_BUILD_FROM_SOURCE=${rnllamaBuildFromSourceFlag}",
@@ -14,4 +14,4 @@ index 10d8fd3..79aaeee 100644
 +      "-DCMAKE_JOB_POOLS=compile=2;link=2"
      ]
  
-     if (hexagonPresent) {
+     // Narrows the CPU-feature variants built for each ABI. Each variant is a full

@@ -1,7 +1,7 @@
-diff --git a/android/build.gradle b/android/build.gradle
+diff --git a/node_modules/whisper.rn/android/build.gradle b/node_modules/whisper.rn/android/build.gradle
 index 4658456..47a9302 100644
---- a/android/build.gradle
-+++ b/android/build.gradle	
+--- a/node_modules/whisper.rn/android/build.gradle
++++ b/node_modules/whisper.rn/android/build.gradle
 @@ -80,7 +80,11 @@ android {
          // Configure STL to be compatible with ReactAndroid JSI libraries
          arguments "-DANDROID_STL=c++_shared",

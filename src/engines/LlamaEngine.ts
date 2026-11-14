@@ -114,6 +114,54 @@ const SESSION_PATH = (
   (FileSystem.cacheDirectory ?? FileSystem.documentDirectory) + 'llama-session.bin'
 ).replace('file://', '');
 
+/**
+ * Token length of the rendered SYSTEM turn, memoized per distinct system text.
+ * Passed as `n_keep` so an overflow evicts old conversation, not the prompt.
+ * Cleared with the context: the count belongs to one model's tokenizer.
+ */
+let keepMemo: { system: string; tokens: number } | null = null;
+
+/** Template wrapping assumed around the system text when the system turn
+ *  cannot be rendered on its own (BOS + ChatML open/close is 6). Erring high
+ *  pins a few tokens of the next turn's header; erring low would drop the END
+ *  of the system prompt, which is where the JSON protocol lives. */
+const SYSTEM_WRAP_TOKENS = 8;
+
+/**
+ * How many leading prompt tokens a context shift must not discard.
+ *
+ * Only called from inside the serialization queue. Costs one template render
+ * and one tokenize per distinct system prompt (it changes when the date line
+ * does), then nothing. Returns 0 — llama.rn's own default — whenever there is
+ * no system turn or the count cannot be had: this is a backstop for a path the
+ * token budgets already keep unreachable, never a reason to fail a turn.
+ */
+async function systemKeepTokens(ctx: LlamaContext, messages: AgentMessage[]): Promise<number> {
+  const first = messages[0];
+  if (!first || first.role !== 'system' || !first.content) return 0;
+  if (keepMemo?.system === first.content) return keepMemo.tokens;
+  let tokens = 0;
+  try {
+    // Exact where the template can render a lone system turn: the result is
+    // the literal prefix of every prompt this conversation will send.
+    const rendered = await ctx.getFormattedChat(
+      [{ role: 'system', content: first.content }],
+      null,
+      { add_generation_prompt: false },
+    );
+    tokens = (await ctx.tokenize(rendered.prompt)).tokens.length;
+  } catch {
+    // Templates that refuse a conversation with no user turn land here.
+    try {
+      tokens = (await ctx.tokenize(first.content)).tokens.length + SYSTEM_WRAP_TOKENS;
+    } catch {
+      return 0;
+    }
+  }
+  keepMemo = { system: first.content, tokens };
+  return tokens;
+}
+
 // --- serialization queue ---
 let chain: Promise<unknown> = Promise.resolve();
 function enqueue<T>(op: () => Promise<T>): Promise<T> {
@@ -213,9 +261,11 @@ async function initContext(
       no_extra_bufts: true,
       // If a conversation outgrows n_ctx anyway, shift the cache window rather
       // than failing the completion (history is budgeted before we get here).
-      // Note ctx_shift discards from the FRONT (llama.rn pins n_keep at 0), so
-      // an overflow eats the system prompt — tool results are token-bounded in
-      // the agent loop precisely so this stays a backstop and not a code path.
+      // The shift discards from just after `n_keep`, which doGenerate() sets to
+      // the system turn's length, so an overflow costs old conversation rather
+      // than the tool catalog. Tool results are still token-bounded in the
+      // agent loop: a shift re-prefills the whole next turn, so this remains a
+      // backstop and not a code path.
       ctx_shift: true,
       ...(Platform.OS === 'android' && gpuLayers === 0
         ? {
@@ -331,6 +381,7 @@ async function doUnload(): Promise<void> {
   suspendedFiles = null;
   sessionSaved = false;
   multimodalReady = false;
+  keepMemo = null;
   contextSig = null;
   contextFresh = false;
 }
@@ -359,6 +410,7 @@ async function doSuspend(): Promise<void> {
   suspendedSpec = spec;
   suspendedFiles = files;
   multimodalReady = false;
+  keepMemo = null;
 }
 
 async function doResume(): Promise<void> {
@@ -414,8 +466,13 @@ async function doGenerate(
     );
   }
 
+  const keep = await systemKeepTokens(context, messages);
+
   const result = await context.completion(
     {
+      // Pin the system turn across a context shift (see ctx_shift in
+      // initContext). Per-request in llama.rn; 0 is its default.
+      ...(keep > 0 ? { n_keep: keep } : {}),
       // llama.rn's message type doesn't declare tool_calls/tool_call_id, but
       // the native OpenAI-compat parser accepts them — the single, deliberate
       // boundary cast. Everything inside `payload` is built from validated
