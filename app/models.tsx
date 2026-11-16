@@ -88,7 +88,14 @@ export default function Models() {
 
   const runDownload = (spec: ModelSpec) => {
     ModelManager.download(spec).catch((e: unknown) => {
-      Alert.alert('Download failed', e instanceof Error ? e.message : String(e));
+      const message = e instanceof Error ? e.message : String(e);
+      // A failed download keeps the bytes it already has; say so, or the
+      // natural reaction is to cancel and start a multi-GB file again.
+      const kept = ModelManager.getStatus(spec.id).paused;
+      Alert.alert(
+        kept ? 'Download interrupted' : 'Download failed',
+        kept ? `${message}\n\nYour progress was kept — tap Resume to continue.` : message,
+      );
     });
   };
 
