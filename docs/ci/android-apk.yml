@@ -1,0 +1,118 @@
+# Builds the release APK.
+#
+# TO ENABLE: copy this file to .github/workflows/android-apk.yml and commit it.
+# (It lives here because the session that wrote it was not permitted to create
+# workflow files.)
+#
+#   * pull request touching app code -> build only; the APK is a workflow artifact.
+#   * manual run (Actions -> Android APK -> Run workflow) -> build, and optionally
+#     publish it as a GitHub Release.
+#
+# The landing page hands out whatever `releases/latest` returns, and GitHub
+# excludes PRERELEASES from that. So a release published from here as a
+# prerelease is downloadable from its own page for testing on a phone without
+# becoming the public download; untick "prerelease" to ship it to the site.
+name: Android APK
+
+on:
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'src/**'
+      - 'modules/**'
+      - 'plugins/**'
+      - 'patches/**'
+      - 'app.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/android-apk.yml'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: 'Publish the APK as a GitHub Release (tag v<version from app.json>)'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark it a prerelease (kept off the website download button)'
+        type: boolean
+        default: true
+
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL" || true
+          df -h /
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Typecheck and lint
+        run: npm run typecheck && npm run lint
+
+      - name: Read version
+        id: version
+        run: |
+          echo "name=$(node -p "require('./app.json').expo.version")" >> "$GITHUB_OUTPUT"
+          echo "code=$(node -p "require('./app.json').expo.android.versionCode")" >> "$GITHUB_OUTPUT"
+
+      - name: Generate the Android project
+        run: npx expo prebuild --platform android --clean --no-install
+
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --console=plain --no-daemon
+
+      - name: Name the APK
+        id: apk
+        run: |
+          out="whisper-v${{ steps.version.outputs.name }}.apk"
+          cp android/app/build/outputs/apk/release/app-release.apk "$out"
+          ls -la "$out"
+          sha256sum "$out"
+          echo "file=$out" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: whisper-v${{ steps.version.outputs.name }}-apk
+          path: ${{ steps.apk.outputs.file }}
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Publish GitHub Release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          flags=()
+          if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+          gh release create "v${{ steps.version.outputs.name }}" "${{ steps.apk.outputs.file }}" \
+            --target "${{ github.sha }}" \
+            --title "v${{ steps.version.outputs.name }}" \
+            --notes "versionCode ${{ steps.version.outputs.code }}. Built by CI from ${{ github.sha }}." \
+            "${flags[@]}"
