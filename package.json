@@ -13,6 +13,7 @@
     "test:live": "vitest run --config vitest.live.config.ts",
     "eval": "vitest run src/agent/eval/corpus.test.ts --reporter=verbose",
     "eval:real": "vitest run --config vitest.real.config.ts --reporter=verbose",
+    "bench:prefill": "vitest run --config vitest.bench.config.ts && node scripts/prefill-bench.mjs",
     "check": "npm run typecheck && npm run lint && npm run test",
     "build:apk": "npm run check && expo prebuild --platform android --clean --no-install && cd android && ./gradlew assembleRelease --console=plain -q",
     "postinstall": "patch-package"
