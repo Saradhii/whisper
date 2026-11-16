@@ -1,4 +1,3 @@
-import { DancingScript_700Bold } from '@expo-google-fonts/dancing-script';
 import { Poppins_600SemiBold, useFonts } from '@expo-google-fonts/poppins';
 import * as Notifications from 'expo-notifications';
 import { Stack } from 'expo-router';
@@ -18,9 +17,10 @@ import * as Settings from '@/src/settings/store';
 import AnimatedSplash from '@/src/splash/AnimatedSplash';
 import { ThemeProvider, Touchable, useTheme, useThemedStyles, type Colors } from '@/src/theme';
 
-// Hold the native splash (solid white, cold-start only by OS design) until
-// fonts are ready, then hand off to the animated overlay with the same first
-// frame — the app mounts and starts loading the model underneath it.
+// Hold the native splash (a blank frame in the theme's background colour,
+// cold-start only by OS design) until the wordmark font is ready, then hand off
+// to the animated overlay with the same first frame — the app mounts and starts
+// loading the model underneath it.
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
 // Without a handler, scheduled reminders are silently suppressed while the
@@ -90,7 +90,7 @@ const createBoundaryStyles = (colors: Colors) =>
   });
 
 export default function RootLayout() {
-  const [fontsLoaded] = useFonts({ Poppins_600SemiBold, DancingScript_700Bold });
+  const [fontsLoaded] = useFonts({ Poppins_600SemiBold });
   const [splashDone, setSplashDone] = useState(false);
   const showSplash = !splashDone && fontsLoaded;
 
