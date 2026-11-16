@@ -4,7 +4,7 @@ import Constants from 'expo-constants';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
 import { useEffect, useSyncExternalStore } from 'react';
-import { ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Platform, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import * as Settings from '@/src/settings/store';
@@ -134,6 +134,27 @@ export default function SettingsScreen() {
           Trajectory recording is the exception — it writes to a file on this phone, and it
           says so.
         </Text>
+        {Platform.OS === 'android' ? (
+          <Touchable
+            style={styles.toggleRow}
+            onPress={() => Settings.set({ gpuAccel: !s.gpuAccel })}
+            accessibilityRole="switch"
+            accessibilityState={{ checked: s.gpuAccel }}
+            accessibilityLabel="GPU acceleration">
+            <View style={styles.toggleLabels}>
+              <Text style={styles.toggleTitle}>GPU acceleration (experimental)</Text>
+              <Text style={styles.toggleHint}>
+                Uses more memory and loads slower; applies after the model reloads
+              </Text>
+            </View>
+            <Switch
+              value={s.gpuAccel}
+              onValueChange={(v) => Settings.set({ gpuAccel: v })}
+              trackColor={{ true: colors.primary, false: colors.border }}
+              thumbColor={colors.switchThumb}
+            />
+          </Touchable>
+        ) : null}
         <Touchable
           style={styles.toggleRow}
           onPress={() => Settings.set({ showPlanSteps: !s.showPlanSteps })}

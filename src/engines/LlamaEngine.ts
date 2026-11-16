@@ -18,6 +18,8 @@ import {
 } from 'llama.rn';
 
 import type { ModelSpec } from '@/src/models/catalog';
+import * as Settings from '@/src/settings/store';
+import { holdWakeLock } from './keepAlive';
 import { normalizeToolCalls } from './toolcalls';
 import type {
   AgentMessage,
@@ -31,23 +33,18 @@ let context: LlamaContext | null = null;
 let loadedSpec: ModelSpec | null = null;
 let loadedFiles: ModelFiles | null = null;
 
-// True while a prewarm completion is in flight, so a real generate() can cut
-// it short instead of queueing behind it.
+// True while a prewarm completion is in flight, so a real turn can cut it
+// short instead of queueing behind it.
+// True while a load is queued or running: the model is "about to be resident",
+// which the lifecycle guard treats the same as resident.
+let loading = 0;
 let prewarming = false;
-// Set by generate() to tell a running prewarm to stop at its next chunk.
+// Set by a real turn so a prewarm that is still QUEUED does not start at all.
 let prewarmAbort = false;
-
-/**
- * How much of the prompt each prewarm slice adds. ~390 Qwen3 tokens, which is
- * ~8s of prefill on the test AVD and well under a second on a phone — the
- * worst case a user can wait for speculative work they did not ask for.
- */
-const PREWARM_CHUNK_CHARS = 1500;
 
 // Set while suspended: the model to restore on the next generate()/resume().
 let suspendedSpec: ModelSpec | null = null;
 let suspendedFiles: ModelFiles | null = null;
-let sessionSaved = false;
 // Whether the vision projector has been loaded into the current context.
 // Cleared with the context, so a reload starts text-only again.
 let multimodalReady = false;
@@ -59,60 +56,58 @@ let multimodalReady = false;
 const ANDROID_THREADS = 4;
 
 /**
- * KV snapshot of the AGENT PREFIX, so a cold start does not recompute it.
+ * The KV checkpoint: one file holding whatever the context last evaluated —
+ * the agent prefix on a first run, prefix + conversation after that.
  *
- * Deliberately a DIFFERENT file from SESSION_PATH below, and written from a
- * different call site. saveSession persists whatever the last completion's
- * prompt was, so sharing one path would have doSuspend() overwrite the prefix
- * with a conversation snapshot and doResume() clobber it back — a feature that
- * works until the first time the app is backgrounded and then silently stops
- * winning, which is the worst possible shape for a performance fix.
+ * It is written when the app has been off-screen for a few seconds
+ * (lifecycle.ts), before a release, and once after the very first prewarm; it
+ * is read back after EVERY model load, cold start included. That last part is
+ * the point. The snapshot used to be remembered only in a JS variable, so it
+ * was honoured on an in-process resume and orphaned by exactly the event it
+ * existed for: the process being killed in the background. A cold start then
+ * restored at most the system prefix and re-read the whole conversation inside
+ * the user's first message.
  *
- * The sidecar holds the context signature and a hash of the rendered prefix.
- * Neither is needed for CORRECTNESS: the cache hit is computed by comparing
- * actual token vectors (find_common_prefix_length in rn-completion.cpp), so a
- * stale snapshot degrades to a shorter common prefix, never to a wrong answer.
- * The guard exists only to avoid reading ~100 MB off disk to earn a hit worth
- * about fifteen tokens — the system prompt carries today's DATE on its second
- * line, so yesterday's snapshot diverges almost immediately.
+ * There is deliberately ONE file, not a prefix snapshot plus a conversation
+ * snapshot. A conversation checkpoint BEGINS with the prefix, and the cache
+ * hit is computed by comparing token vectors (find_common_prefix_length in
+ * rn-completion.cpp), so restoring it into a different conversation — or a new
+ * one — still yields the full prefix hit and never a wrong answer. A stale
+ * snapshot degrades to a shorter common prefix; that is all it can do.
+ *
+ * The sidecar stamp is the context signature. It is not needed for
+ * correctness either: it only stops a multi-hundred-MB read of a file written
+ * by another model or KV geometry, which llama.cpp would reject anyway.
+ *
+ * Lives in the cache dir — a pure speed optimization, so the OS reclaiming it
+ * costs nothing but latency.
  */
-const PREFIX_PATH = (
-  (FileSystem.cacheDirectory ?? FileSystem.documentDirectory) + 'llama-prefix.bin'
+const SESSION_PATH = (
+  (FileSystem.cacheDirectory ?? FileSystem.documentDirectory) + 'llama-session.bin'
 ).replace('file://', '');
-const PREFIX_META_PATH =
-  (FileSystem.cacheDirectory ?? FileSystem.documentDirectory) + 'llama-prefix.json';
+const SESSION_META_PATH =
+  (FileSystem.cacheDirectory ?? FileSystem.documentDirectory) + 'llama-session.json';
+
+// Builds before the single checkpoint kept a separate ~100 MB prefix snapshot.
+// Nothing reads it any more; reclaim the space once per process.
+for (const stale of ['llama-prefix.bin', 'llama-prefix.json']) {
+  void FileSystem.deleteAsync(
+    (FileSystem.cacheDirectory ?? FileSystem.documentDirectory) + stale,
+    { idempotent: true },
+  ).catch(() => {});
+}
 
 /** Identity of the loaded context: a snapshot is only loadable into the same
  *  model and the same KV geometry. Set by doLoad, cleared by doUnload. */
 let contextSig: string | null = null;
 
-/** True from load until the first real generation. loadSession REPLACES the KV
- *  cache, so restoring a prefix over a live conversation would silently swap
- *  the model's context out from under the user. Only ever restore into a
- *  context that has not generated anything yet. */
-let contextFresh = false;
+/** True when the KV cache holds something the checkpoint on disk does not. */
+let kvDirty = false;
 
-/** Non-cryptographic hash (FNV-1a). This guards a cache, not a secret. */
-function hashText(text: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(36);
-}
-
-/** The stamp of the snapshot currently on disk, or null if there isn't one. */
-async function readPrefixStamp(): Promise<string | null> {
-  return FileSystem.readAsStringAsync(PREFIX_META_PATH).catch(() => null);
-}
-
-// KV session snapshot used across suspend/resume. Lives in the cache dir — it
-// is a pure speed optimization (skips re-prefilling the conversation), so the
-// OS reclaiming it costs nothing but latency.
-const SESSION_PATH = (
-  (FileSystem.cacheDirectory ?? FileSystem.documentDirectory) + 'llama-session.bin'
-).replace('file://', '');
+/** True once this context has evaluated an image. Image embeddings sit in the
+ *  cache without a token representation; such a context is never checkpointed
+ *  and resumes by re-prefilling instead (correct, just slower). */
+let kvHasImage = false;
 
 /**
  * Token length of the rendered SYSTEM turn, memoized per distinct system text.
@@ -215,9 +210,21 @@ async function writeGpuProbe(value: GpuProbe): Promise<void> {
   await FileSystem.writeAsStringAsync(GPU_PROBE_PATH, `${value}@${PROBE_STAMP}`).catch(() => {});
 }
 
-/** GPU layers to request for this load. iOS always gets Metal. */
+/**
+ * GPU layers to request for this load. iOS always gets Metal.
+ *
+ * Android is CPU unless the user opts in (Settings.gpuAccel). llama.rn picks
+ * its OpenCL build on its own on Snapdragon 8-series phones, and until this
+ * was gated every such phone silently took a path nothing here was measured
+ * on: weights copied out of the evictable file mapping into driver memory,
+ * a full-precision KV cache (about twice the size), none of the anonymous-RSS
+ * work below applying, and a complete re-upload on every load. The CPU path is
+ * the one the prefill and memory numbers in docs/perf describe.
+ */
 async function gpuLayersFor(): Promise<number> {
   if (Platform.OS === 'ios') return 99;
+  await Settings.init().catch(() => {});
+  if (!Settings.get().gpuAccel) return 0;
   const probe = await readGpuProbe();
   if (probe === 'ok') return 99;
   if (probe === 'untested') {
@@ -240,6 +247,19 @@ async function initContext(
       model: files.model,
       n_ctx: spec.nCtx,
       n_gpu_layers: gpuLayers,
+      // Prompt evaluation runs in chunks of n_batch and llama.rn checks its
+      // interrupt flag only BETWEEN chunks (rn-completion.cpp). The default is
+      // 2048, which made any prompt up to 2048 tokens one uninterruptible
+      // llama_decode: the Stop button was dead for the whole prefill, and a
+      // prewarm could not yield to a real turn. 512 is n_ubatch's own default,
+      // so the compute batch — and with it throughput — is unchanged; only the
+      // granularity at which a stop is noticed moves.
+      n_batch: 512,
+      // CPU-only means CPU-only. With n_gpu_layers 0 alone the default device
+      // list still contains the GPU and llama.cpp still initialises that
+      // backend for the context. Naming the CPU device yields an empty offload
+      // list (buildDeviceOverrides in RNLlamaJSI.cpp).
+      ...(Platform.OS === 'android' && gpuLayers === 0 ? { devices: ['CPU'] } : {}),
       // mmap keeps the multi-GB weights file-backed: under memory pressure the
       // OS can evict and re-fault those pages instead of killing the process.
       // mlock would pin them as unevictable — never on a phone.
@@ -368,8 +388,49 @@ async function doLoad(
   loadedSpec = spec;
   loadedFiles = files;
   // Everything a saved KV snapshot must agree with to be loadable at all.
-  contextSig = [spec.id, spec.nCtx, Platform.OS, gpuLayers > 0 ? 'gpu' : 'cpu'].join('|');
-  contextFresh = true;
+  contextSig = [
+    spec.id,
+    spec.nCtx,
+    Platform.OS,
+    gpuLayers > 0 && ctx.gpu ? 'gpu' : 'cpu',
+    PROBE_STAMP,
+  ].join('|');
+  kvDirty = false;
+  kvHasImage = false;
+}
+
+/**
+ * Read the KV checkpoint into a context that has just been created. Only ever
+ * called on an EMPTY cache — loadSession replaces the cache wholesale, so
+ * doing this to a context that has generated would swap the model's memory out
+ * from under the conversation.
+ */
+async function doRestore(): Promise<void> {
+  if (!context || !contextSig) return;
+  const stamp = await FileSystem.readAsStringAsync(SESSION_META_PATH).catch(() => null);
+  if (stamp !== contextSig) return;
+  try {
+    await context.loadSession(SESSION_PATH);
+  } catch {
+    // Truncated, or reclaimed by the OS — the next completion re-prefills.
+  }
+}
+
+/**
+ * Write the KV cache to disk without releasing anything. No-op when the disk
+ * already holds what the cache does.
+ */
+async function doCheckpoint(): Promise<void> {
+  if (!context || !contextSig || !kvDirty || kvHasImage) return;
+  try {
+    // Stamp off first: a save torn by a kill must not be trusted next launch.
+    await FileSystem.deleteAsync(SESSION_META_PATH, { idempotent: true }).catch(() => {});
+    await context.saveSession(SESSION_PATH, { tokenSize: -1 });
+    await FileSystem.writeAsStringAsync(SESSION_META_PATH, contextSig);
+    kvDirty = false;
+  } catch {
+    // Out of disk, or the cache dir was reclaimed. Costs latency only.
+  }
 }
 
 async function doUnload(): Promise<void> {
@@ -379,30 +440,19 @@ async function doUnload(): Promise<void> {
   loadedFiles = null;
   suspendedSpec = null;
   suspendedFiles = null;
-  sessionSaved = false;
   multimodalReady = false;
   keepMemo = null;
   contextSig = null;
-  contextFresh = false;
+  kvDirty = false;
+  kvHasImage = false;
 }
 
 async function doSuspend(): Promise<void> {
   if (!context || !loadedSpec || !loadedFiles) return;
   const spec = loadedSpec;
   const files = loadedFiles;
-  sessionSaved = false;
   // Snapshot the KV cache so resume skips re-prefilling the conversation.
-  // Vision chats are excluded: image embeddings in the cache have no token
-  // representation, so a restored session would not line up with the prompt —
-  // those resume via a plain re-prefill instead (correct, just slower).
-  if (!spec.vision) {
-    try {
-      await context.saveSession(SESSION_PATH, { tokenSize: -1 });
-      sessionSaved = true;
-    } catch {
-      // best-effort — resume falls back to re-prefill
-    }
-  }
+  await doCheckpoint();
   await releaseAllLlama();
   context = null;
   loadedSpec = null;
@@ -411,30 +461,19 @@ async function doSuspend(): Promise<void> {
   suspendedFiles = files;
   multimodalReady = false;
   keepMemo = null;
+  contextSig = null;
 }
 
 async function doResume(): Promise<void> {
   if (context || !suspendedSpec || !suspendedFiles) return;
   const spec = suspendedSpec;
   const files = suspendedFiles;
-  const restoreSession = sessionSaved;
   suspendedSpec = null;
   suspendedFiles = null;
-  sessionSaved = false;
   // Weights pages are usually still in the OS page cache, so this re-init is
   // far cheaper than the cold load.
   await doLoad(spec, files);
-  if (restoreSession && context) {
-    // doLoad() marked the context fresh; it isn't — it is about to hold (or
-    // re-prefill) a CONVERSATION. Clearing this is what stops a later prewarm
-    // from restoring the agent prefix over the user's resumed chat.
-    contextFresh = false;
-    try {
-      await (context as LlamaContext).loadSession(SESSION_PATH);
-    } catch {
-      // stale/corrupt session — the next completion re-prefills instead
-    }
-  }
+  await doRestore();
 }
 
 async function doGenerate(
@@ -452,6 +491,7 @@ async function doGenerate(
   if (opts?.imageUri) {
     // First image of this context pays for the projector; later ones don't.
     await ensureMultimodal();
+    kvHasImage = true;
     const path = opts.imageUri.replace('file://', '');
     payload = messages.map((m, i) =>
       i === messages.length - 1 && m.role === 'user'
@@ -468,6 +508,7 @@ async function doGenerate(
 
   const keep = await systemKeepTokens(context, messages);
 
+  kvDirty = true;
   const result = await context.completion(
     {
       // Pin the system turn across a context shift (see ctx_shift in
@@ -515,106 +556,89 @@ async function doGenerate(
   };
 }
 
+/** Tell speculative work to get out of a real turn's way. */
+function cancelPrewarm(): void {
+  prewarmAbort = true;
+  // Prefill is interruptible at n_batch granularity (see initContext), so this
+  // costs the turn at most one batch of somebody else's work — and the tokens
+  // the prewarm did evaluate stay in the cache for the turn to reuse.
+  if (prewarming) void context?.stopCompletion();
+}
+
 export const LlamaEngine: Engine = {
   load(spec, files, onProgress) {
-    return enqueue(() => doLoad(spec, files, onProgress));
+    loading++;
+    const loaded = enqueue(async () => {
+      try {
+        const fresh = !(context && loadedSpec?.id === spec.id);
+        await doLoad(spec, files, onProgress);
+        return fresh;
+      } finally {
+        loading--;
+      }
+    });
+    // Restore the KV checkpoint as its own queue entry: the caller is told the
+    // model is ready as soon as the weights are, while anything that would
+    // touch the cache still queues behind the restore.
+    void enqueue(async () => {
+      if (await loaded.catch(() => false)) await doRestore();
+    });
+    return loaded.then(() => undefined);
   },
 
   generate(messages, onToken, opts) {
-    // A real turn outranks speculative work: ask any in-flight prewarm to stop
-    // at its next chunk boundary. Without this the user waits for the whole
-    // prewarm first — measured on the test AVD as a 123s opening turn against
-    // 58s with no prewarm at all, which is the opposite of the point.
-    //
-    // stopCompletion() is NOT enough on its own, and that is the whole reason
-    // prewarm is chunked: it stops token GENERATION, and a prewarm is almost
-    // entirely prompt EVALUATION, which llama.cpp will not abandon part-way.
-    // Chunking is what bounds the wait to one chunk instead of the full warm.
-    prewarmAbort = true;
-    if (prewarming) void context?.stopCompletion();
+    // A real turn outranks speculative work. Measured on the test AVD with an
+    // uninterruptible prewarm: a 123s opening turn against 58s with no prewarm
+    // at all, which is the opposite of the point.
+    cancelPrewarm();
     return enqueue(async () => {
-      await doResume(); // transparent wake-up if the app was backgrounded
-      contextFresh = false; // a prefix snapshot must never land on a live chat
-      return doGenerate(messages, onToken, opts);
+      await doResume(); // transparent wake-up if the model was released
+      // Hold the CPU for the length of the turn: the keep-alive service keeps
+      // the PROCESS alive off-screen, but a sleeping device still stalls it.
+      holdWakeLock(true);
+      try {
+        return await doGenerate(messages, onToken, opts);
+      } finally {
+        holdWakeLock(false);
+      }
     });
   },
 
   prewarm(messages) {
     prewarmAbort = false;
     return enqueue(async () => {
-      if (!context) return; // nothing loaded (or unloaded while we queued)
+      if (!context || prewarmAbort) return; // nothing loaded, or a turn is waiting
       prewarming = true;
-      const prefixText = messages.map((m) => `${m.role}:${m.content}`).join('\n');
-      const stamp = contextSig ? `${contextSig}|${hashText(prefixText)}` : null;
       try {
-        // Fast path: this exact prefix, under this exact context, was warmed on
-        // a previous run and its KV cache is on disk. Restoring it is a
-        // sequential read in place of ~1800 tokens of GEMM (28s on the test
-        // AVD). Only ever into a context that has not generated yet —
-        // loadSession REPLACES the KV cache.
-        if (stamp && contextFresh && (await readPrefixStamp()) === stamp) {
-          try {
-            await (context as LlamaContext).loadSession(PREFIX_PATH);
-            return; // cache restored; the ladder below would be wasted work
-          } catch {
-            // Stale, truncated, or reclaimed by the OS — fall through and warm
-            // it the slow way, which also rewrites the snapshot.
-          }
-        }
-        // Warm in slices of the final message, each completion extending the
-        // cached prefix the previous one left behind. One shot would be fewer
-        // calls, but it would also be UNINTERRUPTIBLE: prompt evaluation runs
-        // to completion inside llama.cpp, so a user who sends mid-warm would
-        // wait out the entire remaining prefill. Chunking caps that wait at one
-        // slice, which is the difference between a prewarm that helps and one
-        // that makes the first message slower than having no prewarm at all.
-        const last = messages[messages.length - 1];
-        if (!last) return;
-        const full = last.content;
-        for (let end = PREWARM_CHUNK_CHARS; ; end += PREWARM_CHUNK_CHARS) {
-          if (prewarmAbort) return; // a real turn is waiting — drop the rest
-          const sliced = [
-            ...messages.slice(0, -1),
-            { ...last, content: full.slice(0, end) },
-          ];
-          // n_predict 0 — "evaluate the prompt, generate nothing". Not just a
-          // tidier spelling of 1: with n_predict 1 the sampled token is pushed
-          // into rn-llama's `embd` (rn-completion.cpp:621) but never decoded
-          // into the KV cache, leaving embd one token LONGER than the cache is
-          // deep. The next call derives its cache hit from
-          // find_common_prefix_length(embd, ...) (rn-completion.cpp:142), so if
-          // that stray token happens to equal the first divergent token of the
-          // next prompt — very possible after a system prompt, where the greedy
-          // pick is often the same ChatML marker the next turn opens with — the
-          // hit lands one cell past what is actually cached and a token is
-          // silently skipped. n_predict 0 returns at rn-completion.cpp:574,
-          // BEFORE that push_back, so embd is exactly the prefix.
-          //
-          // Caveat for whoever benchmarks this: one contended run with 0
-          // measured a cold prefill of 2722 tokens, WORSE than the 2333 with no
-          // prewarm at all, against 597/672 on two runs with 1. Nothing in the
-          // source explains that and the run was noisy (5 tok/s), so it is
-          // recorded rather than acted on. Settle it with context.bench().
-          await context.completion({
-            messages: sliced as RNLlamaOAICompatibleMessage[],
-            n_predict: 0,
-            temperature: 0,
-            ...(loadedSpec?.stop ? { stop: loadedSpec.stop } : {}),
-          });
-          if (end >= full.length) break;
-        }
-        // Ladder finished (not abandoned): persist the prefix KV so the next
-        // cold start reads it instead of recomputing it. Written here, right
-        // after the warm and before any real turn, because saveSession
-        // persists whatever the LAST completion's prompt was — after a real
-        // turn this file would contain prefix+conversation and match less.
-        if (stamp && !prewarmAbort) {
-          try {
-            await (context as LlamaContext).saveSession(PREFIX_PATH, { tokenSize: -1 });
-            await FileSystem.writeAsStringAsync(PREFIX_META_PATH, stamp);
-          } catch {
-            // Out of disk, or the cache dir was reclaimed. Costs latency only.
-          }
+        // n_predict 0 — "evaluate the prompt, generate nothing". Not just a
+        // tidier spelling of 1: with n_predict 1 the sampled token is pushed
+        // into rn-llama's `embd` but never decoded into the KV cache, leaving
+        // embd one token LONGER than the cache is deep. The next call derives
+        // its cache hit from find_common_prefix_length(embd, ...), so if that
+        // stray token happens to equal the first divergent token of the next
+        // prompt the hit lands one cell past what is actually cached and a
+        // token is silently skipped. n_predict 0 returns before that push_back,
+        // so embd is exactly the prefix.
+        //
+        // One completion, not a ladder of slices: prefill yields to
+        // stopCompletion() between n_batch chunks now, which is what the
+        // slicing used to emulate. Whatever was evaluated before a stop stays
+        // cached, and — since this prompt is a prefix of the turn that
+        // interrupted it — is exactly what that turn needs next.
+        const res = await context.completion({
+          messages: messages as RNLlamaOAICompatibleMessage[],
+          n_predict: 0,
+          temperature: 0,
+          ...(loadedSpec?.stop ? { stop: loadedSpec.stop } : {}),
+        });
+        if ((res.timings?.prompt_n ?? 1) > 0) kvDirty = true;
+        // First run on this install/model/build: there is no checkpoint yet,
+        // so write one now rather than waiting for the app to be backgrounded
+        // — otherwise a user who force-quits pays this whole warm-up again.
+        // Later prewarms leave the write to lifecycle.ts.
+        if (!prewarmAbort && contextSig) {
+          const stamp = await FileSystem.readAsStringAsync(SESSION_META_PATH).catch(() => null);
+          if (stamp !== contextSig) await doCheckpoint();
         }
       } catch {
         // Best-effort: a warm cache is an optimization, never a requirement.
@@ -622,6 +646,16 @@ export const LlamaEngine: Engine = {
         prewarming = false;
       }
     });
+  },
+
+  cancelPrewarm,
+
+  isLoaded() {
+    return context !== null || loading > 0;
+  },
+
+  checkpoint() {
+    return enqueue(doCheckpoint);
   },
 
   countTokens(text) {

@@ -25,6 +25,13 @@ const SettingsSchema = z.object({
    *  prompt around them to a FILE. Different lifetime, different risk, so it
    *  gets its own decision — and, like the trace, it is off by default. */
   evalRecord: z.boolean().catch(false),
+  /** Offload the model to the phone's GPU (OpenCL on Adreno) on Android.
+   *  Off by default: every measurement and memory fix in this app was made on
+   *  the CPU path, and the offloaded path copies the weights out of the
+   *  evictable file mapping into driver memory, keeps a full-precision KV
+   *  cache, and re-uploads everything on each load. Takes effect on the next
+   *  model load. iOS always uses Metal and ignores this. */
+  gpuAccel: z.boolean().catch(false),
 });
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -37,6 +44,7 @@ const DEFAULTS: Settings = {
   devTrace: false,
   showPlanSteps: false,
   evalRecord: false,
+  gpuAccel: false,
 };
 const PATH = FileSystem.documentDirectory + 'settings.json';
 

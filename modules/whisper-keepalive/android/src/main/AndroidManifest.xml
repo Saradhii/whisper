@@ -1,0 +1,22 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Keeps the process out of the cached-process bucket while a model is
+         resident and the app is not on screen: a cached process holding a
+         multi-GB model is the low-memory killer's first pick, and Android 14+
+         additionally freezes it within seconds. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Held only while a generation is in flight off-screen, so a turn the
+         user started does not stall when the display sleeps. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application>
+        <service
+            android:name=".ModelKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keeps an on-device language model loaded in memory so the assistant can answer immediately when the user returns." />
+        </service>
+    </application>
+</manifest>

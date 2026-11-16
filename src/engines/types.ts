@@ -100,6 +100,18 @@ export interface Engine {
    * generate() simply pays what it pays today.
    */
   prewarm?(messages: AgentMessage[]): Promise<void>;
+  /** Ask an in-flight or queued prewarm to yield. Called at the start of a
+   *  real turn, before anything that would queue behind the prewarm. */
+  cancelPrewarm?(): void;
+  /** Whether a model is resident right now (false while suspended). */
+  isLoaded?(): boolean;
+  /**
+   * Persist the KV cache to disk WITHOUT releasing the model, so that a
+   * process kill costs a model load plus a file read on the next launch
+   * instead of a re-prefill of the conversation. No-op when nothing changed
+   * since the last checkpoint.
+   */
+  checkpoint?(): Promise<void>;
   /** Count tokens with the loaded model's tokenizer (for context budgeting). */
   countTokens?(text: string): Promise<number>;
   /** Interrupt the in-flight generation. */
