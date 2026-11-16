@@ -77,6 +77,54 @@ const verifying = new Set<string>();
 const statuses = new Map<string, ModelStatus>();
 const inFlight = new Map<string, FileSystem.DownloadResumable>();
 
+// --- download run tracking ---
+// A download is one long async function waiting on a native promise. Pause and
+// Cancel used to work only by poking that native call and then WAITING for the
+// function to notice and tidy up — so whenever the promise settled late, or
+// never, or the tap landed in a gap where no native call was registered yet,
+// the row stayed on "downloading" with two buttons that did nothing, until the
+// app was force-closed.
+//
+// Now each download() call is a numbered RUN, and Pause/Cancel settle the
+// visible state THEMSELVES, immediately: they bump the number (which detaches
+// the old run — it sees it is stale at its next step and returns without
+// touching anything) and then write the new status. The UI never again waits
+// on the native layer to become responsive.
+const runs = new Map<string, number>();
+/** Ids with a live (not detached) download run. The source of truth for
+ *  `status.downloading` whenever statuses are recomputed from disk. */
+const running = new Set<string>();
+
+/** Detach whatever run is in flight for `id` and return its native handle. */
+function detachRun(id: string): FileSystem.DownloadResumable | undefined {
+  runs.set(id, (runs.get(id) ?? 0) + 1);
+  running.delete(id);
+  const resumable = inFlight.get(id);
+  inFlight.delete(id);
+  return resumable;
+}
+
+/** Longest Pause/Cancel waits for the native layer before moving on. */
+const NATIVE_STOP_TIMEOUT_MS = 4000;
+
+function settleWithin(work: Promise<unknown>, ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    const done = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    work.then(done, done);
+  });
+}
+
+async function partBytes(spec: ModelSpec): Promise<number> {
+  const infos = await Promise.all(
+    spec.files.map((f) => FileSystem.getInfoAsync(MODELS_DIR + f.filename + '.part')),
+  );
+  return infos.reduce((sum, i) => sum + (i.exists ? (i.size ?? 0) : 0), 0);
+}
+
 // --- change notification (useSyncExternalStore contract) ---
 let version = 0;
 const listeners = new Set<() => void>();
@@ -206,7 +254,7 @@ async function refreshStatuses(): Promise<void> {
     );
     const installed = infos.every((i) => i.exists);
     const prev = getStatus(spec.id);
-    if (!installed && state.paused.includes(spec.id)) {
+    if (!installed && state.paused.includes(spec.id) && !running.has(spec.id)) {
       // Interrupted download: report how far it got so Resume shows progress.
       const partInfos = await Promise.all(
         spec.files.map((f) => FileSystem.getInfoAsync(MODELS_DIR + f.filename + '.part')),
@@ -224,7 +272,14 @@ async function refreshStatuses(): Promise<void> {
       });
       continue;
     }
-    statuses.set(spec.id, { ...prev, installed, paused: false });
+    // `downloading` is recomputed, never carried over: a stale `true` here is
+    // exactly the stuck row described above.
+    statuses.set(spec.id, {
+      ...prev,
+      installed,
+      paused: false,
+      downloading: !installed && running.has(spec.id),
+    });
   }
 }
 
@@ -275,43 +330,54 @@ function emitProgress(id: string): void {
   emit();
 }
 
-/** Ids the user paused this session (distinguishes pause from cancel). */
-const pauseRequested = new Set<string>();
-
 /**
  * Download every missing file for `spec`, reporting combined progress. Files
  * land as `.part` and are renamed on success, so an interrupted download never
  * masquerades as an installed model. Interrupted/paused downloads keep their
  * .part bytes and resume from that offset (HTTP Range) on Android.
+ *
+ * Resolves quietly when paused or cancelled. Rejects on a real failure — and
+ * in that case the bytes already on disk are KEPT and the row is left paused,
+ * so a dropped connection 150 MB into a multi-GB file costs a tap on Resume,
+ * not the 150 MB.
  */
 export async function download(spec: ModelSpec): Promise<void> {
   const status = getStatus(spec.id);
   if (status.downloading || status.installed) return;
 
-  // Refuse a download that cannot fit. `sizeBytes` is 0 (unknown) for custom
-  // models — those proceed unchecked.
-  const already = status.bytesWritten;
-  if (spec.sizeBytes > 0) {
-    const free = await FileSystem.getFreeDiskStorageAsync().catch(() => null);
-    const needed = spec.sizeBytes - already + 500 * 1024 * 1024; // keep 500 MB headroom
-    if (free != null && free < needed) {
-      throw new Error(
-        `Not enough storage: this model needs ${formatBytes(spec.sizeBytes - already)} more, but only ${formatBytes(free)} is free. Delete another model or free up space first.`,
-      );
-    }
-  }
+  const run = (runs.get(spec.id) ?? 0) + 1;
+  runs.set(spec.id, run);
+  running.add(spec.id);
+  /** False once Pause/Cancel (or a newer run) has taken this download over. */
+  const live = () => runs.get(spec.id) === run;
 
-  // Persist "download in flight" BEFORE starting so a killed app resumes
-  // instead of restarting from zero.
-  pauseRequested.delete(spec.id);
-  if (!state.paused.includes(spec.id)) {
-    state.paused = [...state.paused, spec.id];
-    await persist();
-  }
+  const already = status.bytesWritten;
+  // Shown immediately — before the storage check and the state write below —
+  // so there is no window in which the row still offers "Download".
   setDownloading(spec.id, status.progress, already, spec.sizeBytes);
   emit();
 
   try {
+    // Refuse a download that cannot fit. `sizeBytes` is 0 (unknown) for custom
+    // models — those proceed unchecked.
+    if (spec.sizeBytes > 0) {
+      const free = await FileSystem.getFreeDiskStorageAsync().catch(() => null);
+      const needed = spec.sizeBytes - already + 500 * 1024 * 1024; // keep 500 MB headroom
+      if (free != null && free < needed) {
+        throw new Error(
+          `Not enough storage: this model needs ${formatBytes(spec.sizeBytes - already)} more, but only ${formatBytes(free)} is free. Delete another model or free up space first.`,
+        );
+      }
+    }
+    if (!live()) return;
+
+    // Persist "download in flight" BEFORE starting so a killed app resumes
+    // instead of restarting from zero.
+    if (!state.paused.includes(spec.id)) {
+      state.paused = [...state.paused, spec.id];
+      await persist();
+    }
+
     for (let i = 0; i < spec.files.length; i++) {
       const file = spec.files[i]!;
       const finalPath = MODELS_DIR + file.filename;
@@ -331,12 +397,14 @@ export async function download(spec: ModelSpec): Promise<void> {
           await FileSystem.deleteAsync(partPath, { idempotent: true });
         }
       }
+      if (!live()) return;
 
       const resumable = FileSystem.createDownloadResumable(
         file.url,
         partPath,
         {},
         ({ totalBytesWritten, totalBytesExpectedToWrite }) => {
+          if (!live()) return; // a late event from a run that was paused/cancelled
           const fileProgress =
             totalBytesExpectedToWrite > 0 ? totalBytesWritten / totalBytesExpectedToWrite : 0;
           setDownloading(
@@ -352,9 +420,11 @@ export async function download(spec: ModelSpec): Promise<void> {
       inFlight.set(spec.id, resumable);
 
       const result = resumeFrom > 0 ? await resumable.resumeAsync() : await resumable.downloadAsync();
+      if (!live()) return;
       inFlight.delete(spec.id);
-      // undefined result = cancelled or paused via cancel/pauseDownload()
-      if (!result) throw new CancelledError();
+      // No result without a pause/cancel of ours: the transfer was torn down
+      // underneath us. Treated as an interruption, like any network failure.
+      if (!result) throw new Error(`The download of ${file.filename} was interrupted.`);
       if (resumeFrom > 0 && result.status === 200) {
         // Server ignored the Range request and re-sent the whole file, which
         // got APPENDED to the partial — the .part is now corrupt. Scrap it.
@@ -364,12 +434,16 @@ export async function download(spec: ModelSpec): Promise<void> {
         );
       }
       if (result.status !== 200 && result.status !== 206) {
+        // An error page, not model bytes: never keep it as a partial.
+        await FileSystem.deleteAsync(partPath, { idempotent: true });
         throw new Error(`Download failed for ${file.filename} (HTTP ${result.status}).`);
       }
       await validateGguf(partPath, file.filename);
       await FileSystem.moveAsync({ from: partPath, to: finalPath });
+      if (!live()) return;
     }
 
+    running.delete(spec.id);
     state.paused = state.paused.filter((id) => id !== spec.id);
     await persist();
     statuses.set(spec.id, {
@@ -384,56 +458,71 @@ export async function download(spec: ModelSpec): Promise<void> {
     if (!state.activeId || !getActive()) setActive(spec.id);
     emit();
   } catch (e) {
+    // Paused or cancelled while we were awaiting: that call already settled
+    // the state, and whatever the native layer threw on its way down is noise.
+    if (!live()) return;
+    running.delete(spec.id);
     inFlight.delete(spec.id);
-    if (pauseRequested.has(spec.id)) {
-      // User paused: keep the .part bytes and the persisted paused entry.
-      pauseRequested.delete(spec.id);
-      await refreshStatuses();
-      emit();
-      return;
-    }
-    // Genuine cancel or failure: scrap partials and the paused entry.
-    state.paused = state.paused.filter((id) => id !== spec.id);
-    await persist();
-    for (const f of spec.files) {
-      await FileSystem.deleteAsync(MODELS_DIR + f.filename + '.part', { idempotent: true });
+    // A real failure. Keep whatever bytes made it to disk and leave the row
+    // paused so Resume continues from there; with nothing on disk there is
+    // nothing to resume, so drop back to a plain "Download".
+    if ((await partBytes(spec)) === 0) {
+      state.paused = state.paused.filter((id) => id !== spec.id);
+      await persist();
     }
     await refreshStatuses();
     emit();
-    if (!(e instanceof CancelledError)) throw e;
+    throw e;
   }
 }
 
-class CancelledError extends Error {}
-
 /** Stop the network transfer but keep the bytes — resumable via download(). */
 export async function pauseDownload(id: string): Promise<void> {
-  const resumable = inFlight.get(id);
-  if (!resumable) return;
-  pauseRequested.add(id);
-  // pauseAsync tears down the network call; the in-flight downloadAsync/
-  // resumeAsync then resolves undefined and download() sees pauseRequested.
-  await resumable.pauseAsync().catch(() => {
-    void resumable.cancelAsync().catch(() => {});
-  });
+  if (!getStatus(id).downloading) return;
+  const resumable = detachRun(id);
+  // The row leaves "downloading" NOW; the native teardown is awaited only so
+  // the byte count shown is final, and only for a bounded time.
+  statuses.set(id, { ...getStatus(id), downloading: false, paused: true });
+  emit();
+  if (resumable) {
+    await settleWithin(
+      resumable.pauseAsync().catch(() => resumable.cancelAsync().catch(() => {})),
+      NATIVE_STOP_TIMEOUT_MS,
+    );
+  }
+  if (!state.paused.includes(id)) {
+    state.paused = [...state.paused, id];
+    await persist();
+  }
+  await refreshStatuses();
+  emit();
 }
 
 /** Abandon a download entirely, deleting any partial bytes. */
 export async function cancelDownload(id: string): Promise<void> {
-  const resumable = inFlight.get(id);
+  const resumable = detachRun(id);
+  const idle: ModelStatus = {
+    installed: false,
+    downloading: false,
+    paused: false,
+    progress: 0,
+    bytesWritten: 0,
+    bytesTotal: 0,
+  };
+  statuses.set(id, idle);
+  emit();
   if (resumable) {
-    await resumable.cancelAsync().catch(() => {});
-    return; // download()'s catch handler cleans up
+    await settleWithin(resumable.cancelAsync().catch(() => {}), NATIVE_STOP_TIMEOUT_MS);
   }
-  // Not in flight (a paused entry from a previous session): clean up directly.
-  const spec = getModel(id);
   state.paused = state.paused.filter((p) => p !== id);
   await persist();
+  const spec = getModel(id);
   if (spec) {
     for (const f of spec.files) {
       await FileSystem.deleteAsync(MODELS_DIR + f.filename + '.part', { idempotent: true });
     }
   }
+  statuses.set(id, idle);
   await refreshStatuses();
   emit();
 }
